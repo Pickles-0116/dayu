@@ -1,0 +1,14 @@
+OK   id:'E601'
+OK   id:'E602'
+OK   id:'E603'
+FAIL id:'E604' :: Unexpected token ']'
+   >> {id:'E604', t:'秘境传闻', type:'生涯', when:(s)=>true, w:1.0, cd:5,
+  d:'E604',
+  opts:[ {l:'拉同门同去', hint:'修为＋20 脉＋1', ok:{txt:'你约了同门同去，彼此有个照应，也分了些机缘。', eff:{cult:20,a:{脉:1}}}]} }
+OK   id:'E605'
+OK   id:'E606'
+OK   id:'E607'
+OK   id:'E608'
+OK   id:'E609'
+OK   id:'E610'
+EXIT_0

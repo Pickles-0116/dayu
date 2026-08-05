@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<!--
+  古代人生模拟器 · 网页可交互原型
+  纯离线 / 零外链 / 无构建工具 · 双击本文件即可在浏览器运行（file:// 协议）
+  设计系统：宣纸墨韵 Ink-on-Xuan v1.0（DESIGN.md）
+  机制依据：古代人生模拟器_设计汇总_v0.9.md · 青史双卷（列传＋殁录）· 需求摘要
+
+  文件结构（经典 script 标签串联，不使用 ES Module —— 保证 file:// 下无 CORS 阻断）
+    index.html   界面骨架（5 个界面容器 + 模态挂载点）
+    styles.css   宣纸墨韵设计系统（:root 令牌 + 组件 + 响应式 + reduced-motion）
+    data.js      数据层：出身 24 / 路线 9 / 机遇卡 23 / 主线 8 链 / 通用 12 / 日常 10 / 结局 52 / 行动 18
+    engine.js    引擎层：四阶段管线（结算 → 事件 → 行动 → 更新）
+    ui.js        界面层：五界面切换、年回合驱动、模态、结局与传承闭环
+-->
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大虞 · 古代人生模拟器</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ══════ 界面 1 · 出身抽取 ══════ -->
+  <main id="scr-origin" class="screen" aria-labelledby="origin-h">
+    <div class="wrap">
+      <div class="origin-head">
+        <h1 class="world-title title-tight" id="origin-h">大　虞</h1>
+        <div class="world-sub" id="origin-era">景元 <span class="lat">17</span> 年 · 第 <span class="lat">1</span> 代</div>
+        <div id="house-bar"></div>
+      </div>
+      <div class="origin-grid" id="origin-grid" role="listbox" aria-label="出身卡"></div>
+      <div class="origin-actions">
+        <button class="btn" id="btn-qingshi-origin" type="button">披阅青史</button>
+        <button class="btn" id="btn-reroll" type="button">换一批</button>
+        <span class="meta" id="reroll-meta"></span>
+        <button class="btn btn--primary" id="btn-confirm-origin" type="button" disabled>就此立命</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- ══════ 界面 2 · 人生主界面 HUD ══════ -->
+  <div id="scr-hud" class="screen">
+    <header class="topbar">
+      <div class="topbar__in">
+        <div>
+          <div class="topbar__era" id="hud-era">大虞 · 景元 <span class="lat">17</span> 年</div>
+          <div class="age-block">
+            <span class="age-big" id="hud-age">0</span><span class="age-unit">岁</span>
+          </div>
+        </div>
+        <div class="topbar__spacer"></div>
+        <div class="topbar__badges" id="hud-badges"></div>
+        <button class="btn btn--sm topbar__qs" id="btn-qingshi" type="button">青史</button>
+      </div>
+    </header>
+
+    <div class="hud">
+      <aside class="panel area-attr" aria-label="属性面板">
+        <div id="float-layer"></div>
+        <h2 class="hd3"><span class="ink-dot"></span>属性</h2>
+        <div id="attr-list"></div>
+
+        <div class="sub-block">
+          <h3 class="hd3" style="font-size:var(--fs-sm);letter-spacing:.2em;"><span class="ink-dot"></span>命数（半隐）</h3>
+          <div class="axis-list" id="axis-list"></div>
+        </div>
+
+        <div class="sub-block">
+          <div class="num-line">
+            <span class="attr-name" style="letter-spacing:.16em">健康</span>
+            <b id="health-num">—</b>
+          </div>
+          <div class="health" id="health-bar"><div class="health__fill" id="health-fill" style="width:100%"></div></div>
+          <div class="meta" id="health-note" style="margin-top:var(--sp-1)"></div>
+        </div>
+
+        <div class="sub-block">
+          <div class="num-line">
+            <span class="attr-name" style="letter-spacing:.16em">财帛</span>
+            <b id="money-num">—</b>
+          </div>
+          <div class="meta" id="money-note" style="margin-top:var(--sp-1)"></div>
+        </div>
+
+        <div class="sub-block" id="cult-block" hidden>
+          <div class="num-line">
+            <span class="cultivation__tier" id="cult-tier">未入门</span>
+            <b id="cult-num">—</b>
+          </div>
+          <div class="cultivation"><div class="cultivation__fill" id="cult-fill" style="width:0%"></div></div>
+          <div class="meta" id="cult-note" style="margin-top:var(--sp-1)"></div>
+        </div>
+
+        <div class="sub-block">
+          <h3 class="hd3" style="font-size:var(--fs-sm);letter-spacing:.2em;"><span class="ink-dot"></span>词条</h3>
+          <div class="chips" id="tag-list"></div>
+        </div>
+      </aside>
+
+      <section class="area-event narr" aria-label="事件与年度日志">
+        <div class="narr__stage" id="narr-stage">
+          <h2 class="narr__title" id="narr-title">—</h2>
+          <hr class="ink-rule ink-rule--short" style="margin:var(--sp-2) 0 var(--sp-4)">
+          <div class="narr__body" id="narr-body"></div>
+        </div>
+        <div class="logbox">
+          <h2 class="hd3"><span class="ink-dot"></span>年度日志</h2>
+          <div id="log-list"></div>
+        </div>
+      </section>
+
+      <aside class="panel area-route" aria-label="路线与行事">
+        <div class="rt-tabs" role="tablist" aria-label="决策面板">
+          <button class="rt-tab is-on" id="tab-route" type="button" role="tab" aria-selected="true" data-pane="route">路线</button>
+          <button class="rt-tab" id="tab-act" type="button" role="tab" aria-selected="false" data-pane="act">行事</button>
+        </div>
+        <div class="rt-pane" id="pane-route" role="tabpanel">
+          <h2 class="hd3"><span class="ink-dot"></span>路线</h2>
+          <div id="route-list"></div>
+          <div class="meta" id="route-foot" style="margin-top:var(--sp-4)"></div>
+        </div>
+        <div class="rt-pane" id="pane-act" role="tabpanel" hidden>
+          <h2 class="hd3"><span class="ink-dot"></span>行事</h2>
+          <div id="act-group"></div>
+        </div>
+      </aside>
+    </div>
+
+    <footer class="actionbar" id="actionbar">
+      <div class="actionbar__in">
+        <div class="fate-slot" id="fate-slot"></div>
+        <span class="actionbar__hint" id="act-hint"></span>
+        <span class="actionbar__spacer"></span>
+        <button class="btn btn--primary" id="btn-next-year" type="button">推进一年</button>
+      </div>
+    </footer>
+  </div>
+
+  <!-- ══════ 界面 4 · 结局页 ══════ -->
+  <main id="scr-ending" class="screen"><div class="editorial" id="ending-body"></div></main>
+
+  <!-- ══════ 界面 5 · 传承页 ══════ -->
+  <main id="scr-legacy" class="screen"><div class="editorial" id="legacy-body"></div></main>
+</div>
+
+<div class="backdrop" id="backdrop"></div>
+<div class="modal-root" id="modal-root" role="presentation"></div>
+<div class="toast-root" id="toast-root" aria-live="polite"></div>
+<div class="veil" id="veil" aria-hidden="true"></div>
+
+<!-- ══════ 脚本层 · 经典 script 标签，严格按 数据 → 引擎 → 界面 顺序加载 ══════ -->
+<script src="data.js"></script>
+<script src="engine.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>

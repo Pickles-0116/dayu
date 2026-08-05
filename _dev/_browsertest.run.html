@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<!-- 浏览器端自动化冒烟测试（仅开发期使用，不参与交付） -->
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<title>browser smoke</title>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- 与 index.html 完全一致的界面骨架由 _inject 载入 -->
+  <div id="TESTLOG" style="position:fixed;left:-9999px"></div>
+</div>
+<script>
+/* 捕获一切错误 */
+window.__ERRORS = [];
+window.onerror = function (m, s, l, c) { window.__ERRORS.push('onerror: ' + m + ' @' + l + ':' + c); };
+window.addEventListener('unhandledrejection', function (e) { window.__ERRORS.push('reject: ' + e.reason); });
+(function () {
+  const oe = console.error;
+  console.error = function () { window.__ERRORS.push('console.error: ' + [].join.call(arguments, ' ')); oe.apply(console, arguments); };
+})();
+</script>
+
+<div id="app">
+
+  <!-- ══════ 界面 1 · 出身抽取 ══════ -->
+  <main id="scr-origin" class="screen" aria-labelledby="origin-h">
+    <div class="wrap">
+      <div class="origin-head">
+        <h1 class="world-title title-tight" id="origin-h">大　虞</h1>
+        <div class="world-sub" id="origin-era">景元 <span class="lat">17</span> 年 · 第 <span class="lat">1</span> 代</div>
+        <div id="house-bar"></div>
+      </div>
+      <div class="origin-grid" id="origin-grid" role="listbox" aria-label="出身卡"></div>
+      <div class="origin-actions">
+        <button class="btn" id="btn-reroll" type="button">换一批</button>
+        <span class="meta" id="reroll-meta"></span>
+        <button class="btn btn--primary" id="btn-confirm-origin" type="button" disabled>就此立命</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- ══════ 界面 2 · 人生主界面 HUD ══════ -->
+  <div id="scr-hud" class="screen">
+    <header class="topbar">
+      <div class="topbar__in">
+        <div>
+          <div class="topbar__era" id="hud-era">大虞 · 景元 <span class="lat">17</span> 年</div>
+          <div class="age-block">
+            <span class="age-big" id="hud-age">0</span><span class="age-unit">岁</span>
+          </div>
+        </div>
+        <div class="topbar__spacer"></div>
+        <div class="topbar__badges" id="hud-badges"></div>
+      </div>
+    </header>
+
+    <div class="hud">
+      <aside class="panel area-attr" aria-label="属性面板">
+        <div id="float-layer"></div>
+        <h2 class="hd3"><span class="ink-dot"></span>属性</h2>
+        <div id="attr-list"></div>
+
+        <div class="sub-block">
+          <h3 class="hd3" style="font-size:var(--fs-sm);letter-spacing:.2em;"><span class="ink-dot"></span>命数（半隐）</h3>
+          <div class="axis-list" id="axis-list"></div>
+        </div>
+
+        <div class="sub-block">
+          <div class="num-line">
+            <span class="attr-name" style="letter-spacing:.16em">健康</span>
+            <b id="health-num">—</b>
+          </div>
+          <div class="health" id="health-bar"><div class="health__fill" id="health-fill" style="width:100%"></div></div>
+          <div class="meta" id="health-note" style="margin-top:var(--sp-1)"></div>
+        </div>
+
+        <div class="sub-block">
+          <div class="num-line">
+            <span class="attr-name" style="letter-spacing:.16em">财帛</span>
+            <b id="money-num">—</b>
+          </div>
+          <div class="meta" id="money-note" style="margin-top:var(--sp-1)"></div>
+        </div>
+
+        <div class="sub-block" id="cult-block" hidden>
+          <div class="num-line">
+            <span class="cultivation__tier" id="cult-tier">未入门</span>
+            <b id="cult-num">—</b>
+          </div>
+          <div class="cultivation"><div class="cultivation__fill" id="cult-fill" style="width:0%"></div></div>
+          <div class="meta" id="cult-note" style="margin-top:var(--sp-1)"></div>
+        </div>
+
+        <div class="sub-block">
+          <h3 class="hd3" style="font-size:var(--fs-sm);letter-spacing:.2em;"><span class="ink-dot"></span>词条</h3>
+          <div class="chips" id="tag-list"></div>
+        </div>
+      </aside>
+
+      <section class="area-event narr" aria-label="事件与年度日志">
+        <div class="narr__stage" id="narr-stage">
+          <h2 class="narr__title" id="narr-title">—</h2>
+          <hr class="ink-rule ink-rule--short" style="margin:var(--sp-2) 0 var(--sp-4)">
+          <div class="narr__body" id="narr-body"></div>
+        </div>
+        <div class="logbox">
+          <h2 class="hd3"><span class="ink-dot"></span>年度日志</h2>
+          <div id="log-list"></div>
+        </div>
+      </section>
+
+      <aside class="panel area-route" aria-label="路线进度">
+        <h2 class="hd3"><span class="ink-dot"></span>路线</h2>
+        <div id="route-list"></div>
+        <div class="meta" id="route-foot" style="margin-top:var(--sp-4)"></div>
+      </aside>
+    </div>
+
+    <footer class="actionbar">
+      <div class="actionbar__in">
+        <div class="fate-slot" id="fate-slot"></div>
+        <div class="act-group" id="act-group"></div>
+        <span class="actionbar__hint" id="act-hint"></span>
+        <button class="btn btn--primary" id="btn-next-year" type="button">推进一年</button>
+      </div>
+    </footer>
+  </div>
+
+  <!-- ══════ 界面 4 · 结局页 ══════ -->
+  <main id="scr-ending" class="screen"><div class="editorial" id="ending-body"></div></main>
+
+  <!-- ══════ 界面 5 · 传承页 ══════ -->
+  <main id="scr-legacy" class="screen"><div class="editorial" id="legacy-body"></div></main>
+</div>
+
+<div class="backdrop" id="backdrop"></div>
+<div class="modal-root" id="modal-root" role="presentation"></div>
+<div class="toast-root" id="toast-root" aria-live="polite"></div>
+<div class="veil" id="veil" aria-hidden="true"></div>
+
+<!-- ══════ 脚本层 · 经典 script 标签，严格按 数据 → 引擎 → 界面 顺序加载 ══════ -->
+
+
+
+
+<!--BODY-->
+<script src="../data.js"></script>
+<script src="../engine.js"></script>
+<script src="../ui.js"></script>
+<script>
+/* ══════ 自动化驱动（异步泵：UI 用 setTimeout 串联，必须异步推进） ══════ */
+(function () {
+  const R = {
+    steps: [], errors: window.__ERRORS, screens: {}, endings: [], legacies: 0,
+    lives: 0, years: 0, ticks: 0, acts: {}, routesTaken: {}, modalsSeen: 0, confirmsSeen: 0,
+    rates: {}, dexOpened: 0, dexCells: 0, dexGot: 0, dexCount: '(未展开)'
+  };
+  function log(s) { if (R.steps.length < 40) R.steps.push(s); }
+  function cur() { const on = document.querySelector('.screen.is-on'); return on ? on.id : '(none)'; }
+  function live(sel, root) {
+    return [].slice.call((root || document).querySelectorAll(sel)).filter(function (b) { return !b.disabled; });
+  }
+  function flush() {
+    document.getElementById('TESTLOG').textContent = 'RESULT_JSON=' + JSON.stringify({
+      lives: R.lives, years: R.years, ticks: R.ticks, legacies: R.legacies,
+      screens: R.screens, endings: R.endings.slice(0, 14),
+      acts: R.acts, routesTaken: R.routesTaken,
+      modalsSeen: R.modalsSeen, confirmsSeen: R.confirmsSeen,
+      rates: R.rates, dexOpened: R.dexOpened, dexCells: R.dexCells,
+      dexGot: R.dexGot, dexCount: R.dexCount,
+      errors: R.errors.slice(0, 20), errorCount: R.errors.length,
+      steps: R.steps
+    });
+  }
+  function step() {
+    R.ticks++;
+    const scr = cur();
+    R.screens[scr] = (R.screens[scr] || 0) + 1;
+
+    /* 模态优先 */
+    const m = document.querySelector('#modal-root .modal');
+    if (m) {
+      R.modalsSeen++;
+      const opts = live('.opt', m);
+      if (opts.length) { opts[Math.floor(Math.random() * opts.length)].click(); return; }
+      if (m.classList.contains('modal--confirm')) {
+        R.confirmsSeen++;
+        const yes = m.querySelector('#cf-yes'), no = m.querySelector('#cf-no');
+        (Math.random() < .5 && yes ? yes : no).click();   // 两条分支都要走到
+        return;
+      }
+      const foot = live('.modal__foot button', m);
+      if (foot.length) { foot[0].click(); return; }
+      return;
+    }
+
+    if (scr === 'scr-origin') {
+      const cards = document.querySelectorAll('.origin-card');
+      if (!cards.length) { log('出身页无卡片'); return; }
+      // 偶尔换批，验证 reroll
+      const rr = document.getElementById('btn-reroll');
+      if (rr && !rr.disabled && Math.random() < .3) { rr.click(); return; }
+      cards[Math.floor(Math.random() * cards.length)].click();
+      const cf = document.getElementById('btn-confirm-origin');
+      if (cf && !cf.disabled) { cf.click(); R.lives++; log('第 ' + R.lives + ' 世 · 确认出身'); }
+      return;
+    }
+    if (scr === 'scr-hud') {
+      const rt = live('#route-list button[data-rid]');
+      if (rt.length && Math.random() < .85) {
+        const b = rt[0]; R.routesTaken[b.dataset.rid] = (R.routesTaken[b.dataset.rid] || 0) + 1;
+        b.click(); return;
+      }
+      const fate = document.getElementById('btn-fate');
+      if (fate && Math.random() < .5) { fate.click(); return; }
+      const acts = live('#act-group button[data-act]');
+      if (acts.length) {
+        const a = acts[Math.floor(Math.random() * acts.length)];
+        R.acts[a.dataset.act] = (R.acts[a.dataset.act] || 0) + 1;
+        a.click(); return;
+      }
+      const nx = document.getElementById('btn-next-year');
+      if (nx && !nx.disabled) { nx.click(); R.years++; return; }
+      return;
+    }
+    if (scr === 'scr-ending') {
+      const t = document.querySelector('#ending-body .ending-name');
+      const nm = t ? t.textContent.trim() : '(无题)';
+      const sealEl = document.querySelector('#ending-body .ending-seal');
+      const seal = sealEl ? sealEl.textContent.trim() : '(无印)';
+      if (R.endings[R.endings.length - 1] !== nm + '·' + seal) {
+        R.endings.push(nm + '·' + seal);
+        R.rates[seal] = (R.rates[seal] || 0) + 1;
+        log('结局 · ' + nm + ' · ' + seal);
+      }
+      /* P1-4：图鉴面板展开一次，校验单元格数量与计数文案 */
+      const tg = document.getElementById('dex-toggle');
+      const body = document.getElementById('dex-body');
+      if (tg && body && body.hasAttribute('hidden')) {
+        tg.click();
+        R.dexOpened++;
+        R.dexCells = document.querySelectorAll('#dex-body .dex-cell').length;
+        R.dexGot = document.querySelectorAll('#dex-body .dex-cell--got').length;
+        const c = document.querySelector('#ending-body .dex__count');
+        R.dexCount = c ? c.textContent.replace(/\s+/g, ' ').trim() : '(无)';
+        return;                       /* 下一 tick 再离开，确认展开态不报错 */
+      }
+      const go = document.getElementById('to-legacy') || document.getElementById('to-restart');
+      if (go) go.click();
+      return;
+    }
+    if (scr === 'scr-legacy') {
+      R.legacies++;
+      const heir = live('#legacy-body .heir-card');
+      if (heir.length) { heir[0].click(); return; }
+      const c = document.getElementById('legacy-cancel');
+      if (c) c.click();
+      return;
+    }
+  }
+  function pump() {
+    try { step(); } catch (e) {
+      R.errors.push('driver: ' + e.message + ' | ' + (e.stack || '').split('\n')[1]);
+    }
+    flush();
+  }
+  function start() { flush(); setInterval(pump, 8); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(start, 30); });
+  else setTimeout(start, 30);
+})();
+</script>
+</body>
+</html>

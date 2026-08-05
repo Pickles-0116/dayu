@@ -1,0 +1,83 @@
+GENERAL.length=45
+DAILY.length=34
+--- GENERAL entries ---
+0  id=tianzai  t=天灾 · 旱蝗  type=危机  opts=3
+1  id=wenyi  t=瘟　疫  type=危机  opts=2
+2  id=guiren  t=贵人相助  type=通用  opts=2
+3  id=hunpei  t=婚配 · 联姻  type=通用  opts=3
+4  id=zisi  t=子嗣出生  type=通用  opts=3
+5  id=dishu  t=嫡庶争产  type=通用  opts=3
+6  id=bianshu  t=贬为庶民  type=危机  opts=2
+7  id=xinwang  t=新王清算  type=危机  opts=2
+8  id=chaojia  t=抄家连坐  type=危机  opts=2
+9  id=qiyu  t=奇遇 · 残卷  type=奇遇  opts=2
+10  id=zhanzheng  t=战争 · 叛乱  type=危机  opts=4
+11  id=pobai  t=家族破败  type=危机  opts=2
+12  id=G101  t=私塾开蒙  type=通用  opts=3
+13  id=G102  t=庙会看戏  type=通用  opts=3
+14  id=G103  t=邻家玩伴  type=通用  opts=3
+15  id=G104  t=祖父教字  type=通用  opts=2
+16  id=G105  t=冬日柴火  type=通用  opts=2
+17  id=G106  t=偷看禁书  type=奇遇  opts=2
+18  id=G201  t=比武招亲的看客  type=通用  opts=3
+19  id=G202  t=拜师学艺  type=通用  opts=3
+20  id=G203  t=私塾岁考  type=通用  opts=3
+21  id=G204  t=抢收时节  type=通用  opts=3
+22  id=G205  t=夜读烛火  type=通用  opts=3
+23  id=G206  t=少年游侠梦  type=通用  opts=3
+24  id=G207  t=行商过境  type=通用  opts=3
+25  id=G301  t=州试落第  type=通用  opts=3
+26  id=G302  t=营商遇挫  type=通用  opts=3
+27  id=G303  t=一场官司  type=通用  opts=3
+28  id=G304  t=姻缘之外  type=通用  opts=3
+29  id=G305  t=乱世征兵  type=危机  opts=3
+30  id=G306  t=乡试之年  type=通用  opts=3
+31  id=G401  t=家中顶梁  type=通用  opts=3
+32  id=G402  t=中年危机  type=通用  opts=3
+33  id=G403  t=同窗骤变  type=通用  opts=3
+34  id=G404  t=天灾之年  type=危机  opts=3
+35  id=G405  t=赋税加征  type=危机  opts=3
+36  id=G406  t=故人重逢  type=通用  opts=3
+37  id=G501  t=含饴弄孙  type=通用  opts=3
+38  id=G502  t=老病相催  type=危机  opts=3
+39  id=G503  t=族谱修纂  type=通用  opts=3
+40  id=G504  t=归田之念  type=通用  opts=3
+41  id=G505  t=灯下遗言  type=通用  opts=3
+42  id=X401  t=古寺夜钟  type=奇遇  opts=2
+43  id=X402  t=白发老妪  type=奇遇  opts=3
+44  id=X403  t=天外陨石  type=奇遇  opts=2
+--- DAILY entries ---
+0  id=d1  t=邻里纠纷  type=日常  opts=2
+1  id=d2  t=市集淘宝  type=日常  opts=2
+2  id=d3  t=读书顿悟  type=日常  opts=2
+3  id=d4  t=偶遇旧识  type=日常  opts=2
+4  id=d5  t=节庆宴饮  type=日常  opts=2
+5  id=d6  t=家中琐事  type=日常  opts=2
+6  id=d7  t=学徒犯错  type=日常  opts=2
+7  id=d8  t=江湖闲闻  type=日常  opts=2
+8  id=d9  t=田园收成  type=日常  opts=2
+9  id=d10  t=诗会雅集  type=日常  opts=2
+10  id=N101  t=米铺抬价  type=日常  opts=3
+11  id=N102  t=邻里借粮  type=日常  opts=2
+12  id=N103  t=拾金不昧  type=日常  opts=2
+13  id=N104  t=夜半鬼火  type=日常  opts=2
+14  id=N105  t=手艺营生  type=日常  opts=2
+15  id=N201  t=曲水流觞  type=日常  opts=3
+16  id=N202  t=藏书楼  type=日常  opts=2
+17  id=N203  t=应酬局  type=日常  opts=3
+18  id=N204  t=门生来投  type=日常  opts=3
+19  id=N205  t=修书之请  type=日常  opts=2
+20  id=N301  t=同僚宴请  type=日常  opts=2
+21  id=N302  t=呈文风波  type=日常  opts=3
+22  id=N303  t=地方官来京  type=日常  opts=3
+23  id=N304  t=御前应对  type=日常  opts=3
+24  id=N305  t=同乡会  type=日常  opts=3
+25  id=N401  t=操演点卯  type=日常  opts=3
+26  id=N402  t=军粮夜查  type=日常  opts=3
+27  id=N403  t=边市走私  type=日常  opts=3
+28  id=N404  t=将士同袍  type=日常  opts=3
+29  id=N405  t=演武夺魁  type=日常  opts=2
+30  id=N501  t=行会例会  type=日常  opts=3
+31  id=N502  t=账房舞弊  type=日常  opts=3
+32  id=N503  t=时令生意  type=日常  opts=3
+33  id=N504  t=赊账之人  type=日常  opts=3

@@ -1,0 +1,5 @@
+opt1 structure OK
+correct tail:  eff:{cult:20,a:{脉:1}}}}}]},
+FULL opts PARSE OK
+line 1878 written
+EXIT_0
