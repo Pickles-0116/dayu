@@ -32,6 +32,7 @@
       </div>
       <div class="origin-grid" id="origin-grid" role="listbox" aria-label="出身卡"></div>
       <div class="origin-actions">
+        <span class="meta" id="dex-progress-origin"></span>
         <button class="btn" id="btn-qingshi-origin" type="button">披阅青史</button>
         <button class="btn" id="btn-reroll" type="button">换一批</button>
         <span class="meta" id="reroll-meta"></span>
@@ -124,6 +125,7 @@
         <div class="rt-pane" id="pane-act" role="tabpanel">
           <h2 class="hd3"><span class="ink-dot"></span>行事</h2>
           <div id="act-group"></div>
+          <div id="bag-list" class="bag-list" hidden></div>
         </div>
       </aside>
     </div>
@@ -133,6 +135,7 @@
         <div class="fate-slot" id="fate-slot"></div>
         <span class="actionbar__hint" id="act-hint"></span>
         <span class="actionbar__spacer"></span>
+        <button class="btn" id="btn-fast" type="button" title="连推五年，逢大事即停">快进五年</button>
         <button class="btn btn--primary" id="btn-next-year" type="button">推进一年</button>
       </div>
     </footer>

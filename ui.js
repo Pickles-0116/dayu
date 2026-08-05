@@ -21,7 +21,7 @@ function cacheDom(){
     cultBlock:$('cult-block'), cultTier:$('cult-tier'), cultNum:$('cult-num'), cultFill:$('cult-fill'), cultNote:$('cult-note'),
     tagList:$('tag-list'), narrTitle:$('narr-title'), narrBody:$('narr-body'), logList:$('log-list'),
     routeList:$('route-list'), routeFoot:$('route-foot'),
-    actGroup:$('act-group'), fateSlot:$('fate-slot'), actHint:$('act-hint'), btnNext:$('btn-next-year'),
+    actGroup:$('act-group'), fateSlot:$('fate-slot'), actHint:$('act-hint'), btnNext:$('btn-next-year'), btnFast:$('btn-fast'),
     endingBody:$('ending-body'), legacyBody:$('legacy-body'),
     backdrop:$('backdrop'), modalRoot:$('modal-root'), toastRoot:$('toast-root'), veil:$('veil')
   };
@@ -97,7 +97,15 @@ function startNewDraw(){
   renderHouseBar();
   renderOriginCards();
   updateRerollMeta();
+  renderDexProgressOrigin();
   dom.btnConfirm.disabled = true;
+}
+/* v1.7 图鉴常驻入口 · 开局出身屏进度条（F-8 已有披阅青史按钮，补「已录 x / 总」实时进度） */
+function renderDexProgressOrigin(){
+  const el = document.getElementById('dex-progress-origin');
+  if(!el) return;
+  const st = dexStat();
+  el.textContent = '图鉴已录 '+st.seen+' / '+st.total;
 }
 function renderHouseBar(){
   const gen = META.gens + 1;
@@ -191,28 +199,135 @@ function advanceYear(){
   const notes = doSettle();
   showSettleNotes(notes, function(){
     if(S.pendingEnd){ setTimeout(finishToEnding, 900); return; }
+    /* v1.7 增补二 · 黑市商人：年推进后、主事件队列前 33% 判定，命中先逛摊 */
+    const shop = blackMarketRoll();
+    if(shop){ showShop(shop, function(){ runEventQueue(pickEvents()); }); return; }
     runEventQueue(pickEvents());
   });
 }
+/* v1.7 增补三 · R-3 toast 合并：单年 2–5 条串行 toast（520ms×N）压成 1 条年度摘要。
+   不快进也受益——每把纯等 2–4 分钟 → 近 0。 */
 function showSettleNotes(notes, done){
-  const toasts = [{ t:'第 '+L(S.age)+' 年', x:(S.world==='乱世'?'乱世':'治世'), c:'gain' }];
-  notes.forEach(function(n){ toasts.push({ t:n.t, x:n.x, c:n.c }); });
-  if(!toasts.length){ done(); return; }
-  let i=0;
-  (function next(){
-    if(i>=toasts.length){ setTimeout(done, 320); return; }
-    const t = toasts[i++]; toast(t.t, t.x, t.c); setTimeout(next, 520);
-  })();
+  if(!notes.length){ setTimeout(done, 120); return; }
+  const loss = notes.some(function(n){ return n.c==='loss'||n.c==='danger'; });
+  toast('第 '+L(S.age)+' 年',
+        notes.map(function(n){ return n.x; }).join(' · '),
+        loss ? 'loss' : 'gain');
+  setTimeout(done, 420);
 }
-function runEventQueue(evs){
-  if(!evs.length){ enterActionPhase(); return; }
+function runEventQueue(evs, onDone){
+  if(!evs.length){ if(onDone) onDone(); else enterActionPhase(); return; }
   const item = evs.shift();
-  showEvent(item, function(){ runEventQueue(evs); });
+  showEvent(item, function(){ runEventQueue(evs, onDone); });
 }
 function enterActionPhase(){
   S.phase = 'action'; S.actionDone = false;
   setRtTab('act');   /* v1.7.1:每岁进入行动阶段自动切「行事」 */
   render();
+}
+
+/* ═══════════════ v1.7 增补三 · 快进（R-1 快进五年 + R-2 事件分层 + R-3 摘要） ═══════════════
+   快进 = 逐岁跑完整 doSettle/pickEvents（数值、flag、冷却、抽选全照常，与逐岁等价），
+   仅合并展示；停点（死亡/命运卡/转折flag/黑市/停事件）即停、处理完续跑；行动档位 A 每岁必停，
+   选完自动续跑剩余岁数。吞并的普通事件效果照常 applyEff + 记日志，只省弹窗。 */
+let FAST = null;   /* {left, h, money, yrs, notes} 本段快进状态 */
+
+function fastForward(n){
+  if(!S || S.ended || S.phase!=='idle' || FAST) return;
+  S.phase = 'busy'; render();
+  FAST = { left:n, h:0, money:0, yrs:0, notes:[], startAge:S.age };
+  ffYear();
+}
+function snapFlags(keys){
+  const out = {};
+  keys.forEach(function(k){ out[k] = !!S.flags[k]; });
+  return out;
+}
+function flagsChanged(before){
+  for(const k in before){ if(!!S.flags[k] !== before[k]) return true; }
+  return false;
+}
+function ffYear(){
+  if(!FAST || !S || S.ended) return;
+  const before = snapFlags(['家族破败','九死一生','仙缘','顿悟','野心']);
+  const h0 = S.health, m0 = S.money;
+  const notes = doSettle();
+  FAST.h += S.health - h0; FAST.money += S.money - m0; FAST.yrs++;
+  notes.forEach(function(n){
+    if(n.c==='danger' || n.t==='？' || n.t==='世道') FAST.notes.push(n.x);
+  });
+  if(S.pendingEnd){ ffEnd(true); setTimeout(finishToEnding, 900); return; }
+  /* 命运卡：仅「本段内新派发」的卡停（drawFate 每 3 年派发，drawnAge>段起始年即段内新卡）；
+     开局常驻的旧卡不拦——否则玩家从不点卡，快进每年都被旧卡卡停（实测「还是一年年过」）。 */
+  if(S.fate && S.fate.drawnAge > FAST.startAge){ ffEnd(); render(); return; }
+  if(flagsChanged(before)){ ffEnd(); render(); return; } /* 人生转折 flag：停 */
+  const shop = blackMarketRoll();                         /* 黑市：停（33% 每年照判，命中即停） */
+  if(shop){ ffEnd(); showShop(shop, function(){ runEventQueue(pickEvents()); }); return; }
+  const q = pickEvents();
+  const stops = [], swallows = [];
+  q.forEach(function(it){ (evSig(it)==='stop' ? stops : swallows).push(it); });
+  swallows.forEach(function(it){ resolveEventSilent(it); });   /* 吞并：效果照常、不弹窗 */
+  if(stops.length){ ffEnd(); runEventQueue(stops); return; }   /* 停事件：逐条处理 */
+  ffAction();
+}
+function ffAction(){
+  FAST.left--;
+  if(FAST.left<=0) ffEnd();
+  enterActionPhase();   /* 档位 A：每年行动必停；doAction 后自动续跑 */
+}
+function ffEnd(dead){
+  const f = FAST; FAST = null;
+  if(!S || S.ended) return;
+  /* 中途停止（命运卡/转折/黑市/停事件）须回 idle，否则「推进/快进」按钮滞留禁用 */
+  if(!dead && S.phase==='busy') S.phase = 'idle';
+  if(!f || dead || f.yrs < 2) return;
+  const parts = [];
+  if(f.h)  parts.push('健康 '+(f.h>0?'+':'')+f.h);
+  if(f.money) parts.push('财帛 '+(f.money>0?'+':'')+f.money);
+  if(f.notes.length) parts.push(f.notes.join(' · '));
+  if(parts.length) toast('快进 · '+f.yrs+' 年', parts.join(' · '), (f.h<0||f.money<0)?'loss':'gain');
+}
+/* 事件分层（R-2 · 默认分级 + 显式 sig）：
+   停：sig:'stop'（青楼/赌坊等坏事件）/ 主线 / 生涯 / once / 危机 / 任一分支持 end（有终局） */
+function evHasEnd(ev){
+  if(!ev || !ev.opts) return false;
+  return ev.opts.some(function(o){
+    return (o.ok && o.ok.eff && o.ok.eff.end) || (o.ko && o.ko.eff && o.ko.eff.end);
+  });
+}
+function evSig(item){
+  const ev = item.ev;
+  if(ev.sig === 'stop') return 'stop';
+  if(item.kind==='main' || item.kind==='career') return 'stop';
+  if(ev.once || ev.type==='危机') return 'stop';
+  if(evHasEnd(ev)) return 'stop';
+  return 'swallow';
+}
+/* 吞并事件的静默结算：variants 分支 + 首条可用选项 + 成败二元照常，效果落盘、日志留痕 */
+function resolveEventSilent(item){
+  const ev = item.ev;
+  if(ev.variants && ev.variants.length){
+    for(let vi=0; vi<ev.variants.length; vi++){
+      const v = ev.variants[vi];
+      if(v.hook && v.hook(S)){
+        if(v.d) ev.d = v.d;
+        if(v.eff){ if(!ev.opts[0].eff) ev.opts[0].eff={}; Object.assign(ev.opts[0].eff, v.eff); }
+        if(v.l) ev.opts[0].l = v.l;
+        break;
+      }
+    }
+  }
+  const isMain = item.kind==='main';
+  let opt = null;
+  for(let i=0; i<ev.opts.length; i++){
+    const o = ev.opts[i];
+    const attrMet = !o.req || Object.keys(o.req).every(function(k){ return S.attrs[k]>=o.req[k]; });
+    const fnMet   = !o.reqFn || !!o.reqFn(S);
+    if(attrMet && fnMet){ opt = o; break; }
+  }
+  if(!opt) return;
+  const r = resolveOpt(opt, isMain ? {rid:item.rid} : null);
+  pushLog(S.age, '（快进）'+ev.t+'：'+r.txt, '');
 }
 function onActionClick(act){
   if(S.phase!=='action' || S.actionDone || S.ended) return;
@@ -226,9 +341,11 @@ function doAction(act){
   S.actionDone = true;
   setRtTab('route');   /* v1.7:行动后自动切回「路线」,看路线进度反馈 */
   render();
-  if(S.pendingEnd){ setTimeout(finishToEnding, 500); return; }
+  if(S.pendingEnd){ FAST = null; setTimeout(finishToEnding, 500); return; }
   S.phase = 'idle'; S.actionDone = false;
   render();
+  /* v1.7 增补三 · 档位 A：快进中每岁行动必停，选完自动续跑剩余岁数 */
+  if(FAST && FAST.left>0){ setTimeout(ffYear, 250); }
 }
 
 /* ───────── 事件弹窗 ───────── */
@@ -318,6 +435,88 @@ function showConfirmBox(c, onYes){
   openModal(modal, { focusSel:'#cf-no', onEsc:function(){ closeModal(); } });
 }
 
+/* ═══════════════ v1.7 增补二 · 黑市商人弹层（3 件 · 刷新 1 次 · 买 2 次） ═══════════════ */
+/* 黑市购买核心（纯逻辑，UI 事件委托只负责触发；探针可直测）：
+   每件商品库存 1（bought 标记，同一商品最多买 1 次）；全局最多买 2 件（从不同商品中挑）。 */
+function shopBuy(shop, i){
+  const g = shop.goods[i];
+  if(!g || g.bought || S.money < g.price || shop.buy<=0) return { ok:false };
+  S.money = clampMoney(S, S.money - g.price);
+  shop.buy--; g.bought = true;
+  if(g.use==='hold'){
+    S.bag.push(g.id);
+    return { ok:true, hold:true, txt:'存入包袱' };
+  }
+  const deltas = applyEff(g.eff, null);
+  return { ok:true, txt:deltas.map(function(d){ return (d.v>0?'+':'')+d.k+' '+Math.abs(d.v); }).join(' · ')||'即时生效' };
+}
+function showShop(shop, onClose){
+  const modal = el('div','modal');
+  modal.innerHTML =
+    '<div class="modal__type"><span class="badge badge--gilt">黑市商人</span></div>'
+    + '<h2 class="modal__title">夜航船 · 黑市</h2>'
+    + '<p class="modal__lead">「客官，货在此，银在此，缘分也在此。」</p>'
+    + '<div class="shop-money meta" id="shop-money"></div>'
+    + '<div class="shop-grid" id="shop-goods"></div>'
+    + '<div class="modal__foot">'
+    + '<button class="btn" id="shop-refresh" type="button">刷新货品（余 1 次）</button>'
+    + '<button class="btn btn--primary" id="shop-done" type="button">收摊</button></div>';
+  openModal(modal, { focusSel:'#shop-done', onEsc:function(){ closeModal(); onClose(); } });
+  /* 商品浅拷贝为「每件实例」：bought 标记不污染共享 BLACKMARKET_GOODS 池 */
+  shop.goods = shop.goods.map(function(g){ return Object.assign({}, g, { bought:false }); });
+  const goodsBox = dom.modalRoot.querySelector('#shop-goods');
+  const renderGoods = function(){
+    dom.modalRoot.querySelector('#shop-money').innerHTML = '囊中 <b class="lat">'+L(S.money)+'</b> 银 · 尚可购 <b class="lat">'+shop.buy+'</b> 件';
+    goodsBox.innerHTML = shop.goods.map(function(g, i){
+      const afford = !g.bought && S.money >= g.price && shop.buy > 0;
+      return '<div class="shop-item'+(afford?'':' shop-item--sold')+'">'
+        + '<div class="shop-item__n">'+esc(g.n)+'</div>'
+        + '<p class="shop-item__d">'+esc(g.d)+'</p>'
+        + '<div class="shop-item__row"><span class="shop-item__price">'+L(g.price)+' 银</span>'
+        + '<button class="btn btn--sm" data-buy="'+i+'" '+(afford?'':'disabled')+' type="button">'+(g.bought?'已购':'购')+'</button></div></div>';
+    }).join('');
+  };
+  /* 事件委托：监听挂商品容器上，renderGoods 重建按钮后监听不丢；
+     同一商品库存 1（bought 后置灰「已购」），全局 2 次从不同商品中挑。 */
+  goodsBox.addEventListener('click', function(ev){
+    const t = ev.target;
+    const btn = (t && t.closest) ? t.closest('[data-buy]') : null;
+    if(!btn || btn.disabled) return;
+    const i = parseInt(btn.getAttribute('data-buy'),10);
+    const r = shopBuy(shop, i);
+    if(!r.ok) return;
+    const g = shop.goods[i];
+    pushLog(S.age, '黑市购得「'+g.n+'」。', '');
+    toast('购入 · '+g.n, r.txt, 'gain');
+    if(shop.buy<=0){ const rf = dom.modalRoot.querySelector('#shop-refresh'); if(rf) rf.disabled = true; }
+    renderGoods(); render();
+  });
+  renderGoods();
+  const ref = dom.modalRoot.querySelector('#shop-refresh');
+  ref.addEventListener('click', function(){
+    if(shop.refresh<=0) return;
+    shop.refresh--; shop.buy = 2;
+    const pool = BLACKMARKET_GOODS.slice(), out = [];
+    while(out.length<3 && pool.length){ out.push(pool.splice(ri(0,pool.length-1),1)[0]); }
+    shop.goods = out.map(function(g){ return Object.assign({}, g, { bought:false }); });
+    ref.disabled = true; ref.textContent = '货已换过一茬';
+    renderGoods();
+  });
+  dom.modalRoot.querySelector('#shop-done').addEventListener('click', function(){ closeModal(); onClose(); });
+}
+/* 持有型道具使用（行事页「包袱」）：applyEff 生效并移出背包 */
+function useBagItem(gid){
+  const g = BLACKMARKET_GOODS.find(function(x){ return x.id===gid; });
+  if(!g || !S.bag) return;
+  const idx = S.bag.indexOf(gid);
+  if(idx<0) return;
+  const deltas = applyEff(g.eff, null);
+  S.bag.splice(idx,1);
+  pushLog(S.age, '用「'+g.n+'」：'+(g.useTxt||'—'), '');
+  toast('用 · '+g.n, deltas.map(function(d){ return (d.v>0?'+':'')+d.k+' '+Math.abs(d.v); }).join(' · ')||'收讫', 'gain');
+  render();
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    主界面渲染
    ═══════════════════════════════════════════════════════════════════ */
@@ -328,7 +527,7 @@ function render(){
   dom.hudAge.classList.remove('is-tick'); void dom.hudAge.offsetWidth; dom.hudAge.classList.add('is-tick');
   renderBadges(); renderAttr(); renderAxis(); renderHealth(); renderCult(); renderMoney();
   renderTags(); renderRoutes(); renderNarr(); renderLog();
-  renderFate(); renderActions(); renderRouteFoot();
+  renderFate(); renderActions(); renderBag(); renderRouteFoot();
   dom.btnNext.disabled = !(S.phase==='idle' && !S.ended);
 }
 function renderBadges(){
@@ -668,6 +867,21 @@ function renderActions(){
     : (S.phase==='action' ? (S.actionDone?'今年已行事':'择一事以度此年')
     : '（待推进一岁）');
 }
+/* v1.7 增补二 · 包袱：行事页展示持有型道具（点击即用） */
+function renderBag(){
+  const wrap = document.getElementById('bag-list');
+  if(!wrap || !S) return;
+  if(!S.bag || !S.bag.length){ wrap.hidden = true; return; }
+  wrap.hidden = false;
+  wrap.innerHTML = '<div class="hd3" style="font-size:var(--fs-sm);letter-spacing:.2em;margin-top:var(--sp-3)"><span class="ink-dot"></span>包袱 · 持有</div>'
+    + '<div class="chips">' + S.bag.map(function(id){
+        const g = BLACKMARKET_GOODS.find(function(x){ return x.id===id; });
+        return g ? '<button class="chip chip--bag" data-bag="'+id+'" type="button" title="点击使用">'+esc(g.n)+' · 用</button>' : '';
+      }).join('') + '</div>';
+  wrap.querySelectorAll('[data-bag]').forEach(function(b){
+    b.addEventListener('click', function(){ useBagItem(b.dataset.bag); });
+  });
+}
 function renderRouteFoot(){
   const active = Object.keys(S.routes).filter(function(id){ return S.routes[id].active; });
   dom.routeFoot.innerHTML = active.length
@@ -679,6 +893,7 @@ function renderRouteFoot(){
    结局 / 传承
    ═══════════════════════════════════════════════════════════════════ */
 function finishToEnding(){
+  FAST = null;   /* 快进终止（任何入结局路径先清段状态） */
   const res = resolveOutcome();
   S.ended = true;
   renderEnding(res.ach, res.death);
@@ -916,9 +1131,14 @@ function showLegacy(){
     const on = META.gens>=t.gen;
     html += '<div class="house-tier '+(on?'house-tier--on':'house-tier--off')+'"><span>第 '+t.gen+' 代起</span><span>'+esc(t.n)+'</span><span>'+(on?'已成':'未至')+'</span></div>';
   });
+  const dSt = dexStat();
+  html += '<div class="legacy-dex"><span class="meta">图鉴已录 <b class="lat">'+dSt.seen+'</b> / <b class="lat">'+dSt.total+'</b></span>'
+    + '<button class="btn btn--sm" id="btn-qingshi-legacy" type="button">披阅青史</button></div>';
   html += '</div><div class="ending-actions"><button class="btn" id="legacy-cancel" type="button">不传 · 重开</button></div>';
   dom.legacyBody.innerHTML = html;
   switchScreen('scr-legacy');
+  const qsL = dom.legacyBody.querySelector('#btn-qingshi-legacy');
+  if(qsL) qsL.addEventListener('click', function(){ openQingshi(null); });
   dom.legacyBody.querySelectorAll('.heir-card').forEach(function(b){
     b.addEventListener('click', function(){
       commitLegacy(parseInt(b.dataset.idx,10));
@@ -935,6 +1155,7 @@ function bindStatic(){
   dom.btnReroll.addEventListener('click', reroll);
   dom.btnConfirm.addEventListener('click', confirmOrigin);
   dom.btnNext.addEventListener('click', advanceYear);
+  if(dom.btnFast) dom.btnFast.addEventListener('click', function(){ fastForward(5); });
   dom.backdrop.addEventListener('click', function(){ if(MODAL_ONESC) MODAL_ONESC(); });
   /* v1.7:右栏双 tab「路线 / 行事」 */
   const tabR = document.getElementById('tab-route');

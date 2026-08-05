@@ -26,7 +26,7 @@ const NAMES = ['砚','昭','衡','珩','翎','珏','岐','澈','徵','稷','翊'
    dex   ：结局图鉴（P1-4）—— { 结局id: {c:遇见次数, s:最高得分, g:最高品第, a:享年} }
    lives ：累计游玩世数（含幼殇／乞丐夭折） */
 function metaDefaults(){
-  return { gens:0, year:17, trainAttr:null, houseTags:[], lastEnding:null,
+  return { gens:0, year:17, trainAttr:null, houseTags:[], lastEnding:null, lastTier:null,
            dex:{}, dexId:{}, dexDeath:{}, lives:0 };
 }
 let META = metaDefaults();
@@ -57,7 +57,32 @@ function originWeight(o){
   return TIER_WEIGHT[o.t]/cnt;                        /* 层级权重均分到该层各项 → 全量 24 项均可抽中 */
 }
 function drawOrigins(n){
-  const pool = ORIGINS.slice(), out = [];
+  /* v1.7 增补一 · 继承出身筛选：
+     首代（gens===0）：剔除 inheritOnly 专属出身，天然「只有继承才出现」；
+     继承代（gens>=1）：按 META.lastEnding 命中 INHERIT_ORIGIN_RULES——
+       · pool 函数存在 → 以其为候选池（fujia 仅商家）；
+       · pool 为 null/未定义 → 默认「同阶层±1 且排除 乞丐/帝王」；
+       · add 注入专属出身 id（始皇/玄奘修仙）。 */
+  let pool = ORIGINS.slice();
+  if(!META.gens){
+    pool = pool.filter(function(o){ return !o.inheritOnly; });
+  }else{
+    const rule = (typeof INHERIT_ORIGIN_RULES!=='undefined' && META.lastEnding)
+      ? INHERIT_ORIGIN_RULES[META.lastEnding] : null;
+    if(rule && typeof rule.pool==='function'){
+      pool = rule.pool();
+    }else{
+      const lt = (typeof META.lastTier==='number') ? META.lastTier : 3;
+      pool = pool.filter(function(o){ return !o.beggar && !o.royal && Math.abs(o.t-lt)<=1; });
+    }
+    if(rule && rule.add){
+      rule.add.forEach(function(id){
+        const o = ORIGINS.find(function(x){ return x.id===id; });
+        if(o && pool.indexOf(o)<0) pool.push(o);
+      });
+    }
+  }
+  const out = [];
   while(out.length<n && pool.length){
     let total=0; for(let i=0;i<pool.length;i++) total+=originWeight(pool[i]);
     let r=Math.random()*total, idx=0;
@@ -100,7 +125,7 @@ function newLife(origin){
     health: hmax, healthMax: hmax, money: origin.debt ? -1 : (origin.pauper ? 0 : 20 + attrs.财*15),
     rank: rank, tags: origin.tags.concat(inhTags), flags:{}, pauper:!!origin.pauper, debt:!!origin.debt,
     world: chance(.3)?'乱世':'治世',
-    merit:0, incense:0, cult:0, xianTier:-1,
+    merit:0, incense:0, cult:0, xianTier:-1, hanghai:0,     /* v1.7 C线：航海外交计数（郑和锁 7） */
     married:false, children:[],
     routes:{}, phase:'idle', queue:[], actionDone:false, ended:false, pendingEnd:null,
     fate:null, fateLastYear:-1,                              /* 机遇卡槽 */
@@ -112,6 +137,11 @@ function newLife(origin){
     log:[], houseLog: houseLog, narr:{t:'', b:''}, deaths:[]
   };
   if(origin.beggar) S.flags.乞儿=true;
+  /* v1.7 增补一：继承专属出身开局即带修仙 flag（xian.vis 直接可见，绕破败闸门） */
+  if(origin.id==='yingzheng_xiu'){ S.flags.始皇遗脉 = true; S.flags.修仙入门 = true; S.cult = 40; }
+  if(origin.id==='xuanzang_xiu'){ S.flags.金蝉遗蜕 = true; S.flags.修仙入门 = true; S.cult = 40; }
+  /* v1.7 增补二：轻量背包（只存持有型道具，不跨世继承） */
+  S.bag = [];
   return S;
 }
 
@@ -189,7 +219,18 @@ function applyEff(eff, ctx){
     /* P0-2 已婚 Bug（规格 §2.1）：全引擎判定读 S.married，而事件只写 flags['已婚']。
        此处同步置位，一并修复「婚配年年可触发／子嗣永不出生／徽章不显／岁出少计 4 银」。 */
     if(f==='已婚') S.married = true;
+    /* v1.7 增补一：染花柳记下染龄（b22 直判 Math.max(35, ageAt染) 用） */
+    if(f==='花柳' && S.ageAt染===undefined) S.ageAt染 = S.age;
   });
+
+  /* v1.7 C线 · 航海外交计数：eff.hanghaiInc → S.hanghai++，达 7 置「七下西洋」（郑和锁 7） */
+  if(eff.hanghaiInc){
+    S.hanghai = (S.hanghai||0) + 1;
+    if(S.hanghai >= 7 && !S.flags.七下西洋){
+      S.flags.七下西洋 = true;
+      pushLog(S.age, '七下西洋，海图初成。','key');
+    }
+  }
 
   /* 贬为庶民（D-17：留 50% 人脉、清零 70% 财力、声望降至 1） */
   if(eff.demote){
@@ -274,6 +315,8 @@ function achievementEnding(){
   /* 帝王五途（v1.6 · 青史）：同为「帝王」，得国之由不同，铭文亦不同。
      判定顺序即合法性由「无」到「有」：夺位 > 布衣开国 > 军阀开国 > 承袭守成。 */
   if(S.identity==='diwang'){
+    /* v1.7 A线：汉胄（刘秀）以「光武中兴」论定，优先于军阀开国/承袭守成 */
+    if(S.flags.陨石助战 || S.flags.光武 || S.flags.中兴) return 'guangwu';
     if(S.flags.玄武门)   return 'xuanwu';         /* 嫡争 · 宫门之变 */
     if(S.flags.靖难即位) return 'jingnan';        /* 靖难 · 藩镇夺位 */
     if(S.flags.乞儿)     return 'caomangtianzi';  /* 布衣 · 草莽天子 */
@@ -463,6 +506,19 @@ function yearEconomy(){
 function moneyFloor(s){ return (s.pauper || s.debt) ? -30 : 0; }
 function clampMoney(s, v){ return Math.max(moneyFloor(s), v); }
 
+/* ───────── v1.7 增补二 · 黑市商人（正向日常 · 33% 年判定） ─────────
+   由 advanceYear（正常年）与 fastForward（快进年）调用；命中返回 {goods:3, refresh:1, buy:2}，
+   未命中返回 null。不占主事件名额（独立于 pickEvents 队列）。 */
+function blackMarketRoll(){
+  if(typeof BLACKMARKET_GOODS==='undefined' || !BLACKMARKET_GOODS.length) return null;
+  if(!chance(.33)) return null;
+  const pool = BLACKMARKET_GOODS.slice(), goods = [];
+  while(goods.length<3 && pool.length){
+    goods.push(pool.splice(ri(0,pool.length-1),1)[0]);
+  }
+  return { goods:goods, refresh:1, buy:2 };
+}
+
 /* ───────── 阶段 ①：结　算 ───────── */
 function decayFor(age){
   if(age<15) return 0;
@@ -515,8 +571,19 @@ function doSettle(){
     }
   }
 
-  /* 寿命检定 */
-  if(S.health<=0){ S.pendingEnd = judgeNaturalDeath(true); return notes; }
+  /* 寿命检定（v1.7 增补二：保命符濒死免死一次） */
+  if(S.health<=0){
+    if(S.flags.保命符){
+      S.flags.保命符 = false; S.health = 1;
+      notes.push({t:'保命',x:'护符应声而碎，捡回一命', c:'gain'});
+      pushLog(S.age, '贴身的保命符应声而碎，你捡回一条命。', 'key');
+    }else{
+      S.pendingEnd = judgeNaturalDeath(true); return notes;
+    }
+  }
+  /* v1.7 增补一 · 花柳直判（用户拍板：不走危机事件，结算期直接判死）：
+     染花柳后，年满 max(35, 染龄) 即腐朽而终（b22）。 */
+  if(S.flags.花柳 && S.age>=Math.max(35, S.ageAt染||35)){ S.pendingEnd = 'b22'; return notes; }
   if(S.age>=S.lifespan){ S.pendingEnd = judgeNaturalDeath(false); return notes; }
 
   /* 家族破败闸门 & 仙缘 */
@@ -526,8 +593,8 @@ function doSettle(){
     S.flags.九死一生 = true; notes.push({t:'绝境',x:'九死一生', c:'danger'}); }
   if(S.flags.家族破败 && S.flags.九死一生 && !S.flags.仙缘 && !S.flags.弃仙缘 && chance(.12)){
     S.flags.仙缘 = true; notes.push({t:'？',x:'冥冥中似有所感', c:'gain'}); }
-  /* 宗教顿悟闸门 */
-  if(!S.flags.顿悟 && S.mind>=8 && S.age>=20 && chance(.10)){
+  /* 宗教顿悟闸门（v1.7 增补二：黑市经卷「向道」可提升悟道概率） */
+  if(!S.flags.顿悟 && S.mind>=8 && S.age>=20 && chance(.10 + (S.flags.向道?0.12:0))){
     S.flags.顿悟 = true; notes.push({t:'心',x:'忽有所悟', c:'gain'}); }
   /* 野心 */
   if(!S.flags.野心 && S.merit>=5 && S.world==='乱世' && chance(.35)) S.flags.野心 = true;
@@ -641,7 +708,7 @@ function judgeNaturalDeath(byHealth){
   const on = function(id){ return !!(R[id] && R[id].active); };
 
   /* ① 位高而德薄 —— 死于反噬（皆属死法，不是成就） */
-  if(S.identity==='diwang' && S.moral<4) return 'baozheng';       /* 暴虐被弑 */
+  if((S.identity==='diwang'||S.identity==='weimian') && S.moral<4) return 'baozheng';       /* 暴虐被弑 */
   if(on('zheng') && S.rank>=3 && S.moral<4) return 'jianning';     /* 奸佞见诛 */
   if(on('jun') && S.flags.留京 && S.merit>=8 && !S.flags.急流勇退) return 'tusi';
   if(on('shang') && S.flags.垄断 && S.moral<4) return 'longduan';
@@ -679,13 +746,27 @@ function judgeNaturalDeath(byHealth){
    primary 为落图鉴与计分的主键：死法属凶终（bad／cut）时以死法为准，
    否则成就铭文优先（善终者以其一生所立之身份论定）。 */
 function resolveOutcome(){
-  const death = (S && S.pendingEnd && ENDINGS[S.pendingEnd]) ? S.pendingEnd : 'pingdan';
+  let death = (S && S.pendingEnd && ENDINGS[S.pendingEnd]) ? S.pendingEnd : 'pingdan';
+  /* v1.7 主文档 B-4 / D-4：弃帝修仙 / 弃名修仙 的虚拟修仙落点（优先级高于普通飞升与帝王铭文）。
+     金蝉子由取经链末节点 end 直结，此处为保险兜底（如后续年份自然寿终前仍持双旗标）。 */
+  if(S && S.flags.弃帝修仙 && S.xianTier>=2 && ENDINGS['xianyingzheng']) death = 'xianyingzheng';
+  if(S && S.flags.弃名修仙 && S.flags.取经悟道 && ENDINGS['jinchanzi']) death = 'jinchanzi';
+  /* v1.7 C线 · 郑和远航：从政 + 七下西洋 + rank≥3（官身，与 waijiao/G_hanghai 门槛一致）
+     → 善终落点（bad 死亡保留死法，不覆盖凶终） */
+  if(S && S.flags.七下西洋 && S.routes.zheng && S.routes.zheng.active && S.rank>=3
+     && ENDINGS['zhenghe'] && ENDINGS[death] && ENDINGS[death].k!=='bad'){
+    death = 'zhenghe';
+  }
   const ach   = achievementEnding();
   const dk    = ENDINGS[death] ? ENDINGS[death].k : 'good';
   /* 凶终（bad）抹去成就铭文——被弑者无「守成」之名；
      血脉断绝（cut）只关乎传承，不抵消一生所立，故仍保留成就。 */
   const fatal = (dk==='bad');
-  const primary = (ach && !fatal && ach!==death) ? ach : death;
+  /* v1.7：虚拟修仙结局（ascend·史无其人）为主键落点——不因已立身份（教宗/真人）被覆盖，进图鉴异闻分区 */
+  const virtual = (death==='xianyingzheng' || death==='jinchanzi');
+  /* v1.7 C线：郑和远航为主键（玩家以远航善终论定，不因从政名臣身份被覆盖） */
+  const forced  = (death==='zhenghe');
+  const primary = (ach && !fatal && !virtual && !forced && ach!==death) ? ach : death;
   return { death:death, ach: fatal ? null : ach, primary:primary,
            identity: S ? S.identity : null, years: S ? S.reignYears : 0 };
 }
@@ -713,6 +794,9 @@ function recordIdentity(score){
    优先级：玄武门夺位 ＞ 靖难 ＞ 布衣开国(乞儿) ＞ 承袭守成(宗籍) ＞ 军阀开国。 */
 function diwangVariant(){
   if(!S) return 'inherit';
+  /* v1.7 A线/B线：刘秀（陨石/光武/中兴）、嬴政（灭群雄/大一统）专属史鉴原型 */
+  if(S.flags.陨石助战 || S.flags.光武 || S.flags.中兴) return 'liuxiu';
+  if(S.flags.灭群雄 || S.flags.大一统) return 'qin';
   if(S.flags.玄武门)   return 'duodi-A';
   if(S.flags.靖难即位) return 'duodi-B';
   if(S.flags.乞儿)     return 'caom';
@@ -811,6 +895,7 @@ function computeInherit(childIdx){
 function commitLegacy(childIdx){
   INHERIT = computeInherit(childIdx);
   META.gens += 1;
+  META.lastTier = S.tier;   /* v1.7 增补一：记录上一世出身阶层（继承出身「同阶层±1」收窄的依据） */
   META.year = S.baseYear + S.age;
   if(!META.trainAttr){
     let best='体', bv=-1;
