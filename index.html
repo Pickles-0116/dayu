@@ -113,15 +113,15 @@
 
       <aside class="panel area-route" aria-label="路线与行事">
         <div class="rt-tabs" role="tablist" aria-label="决策面板">
-          <button class="rt-tab is-on" id="tab-route" type="button" role="tab" aria-selected="true" data-pane="route">路线</button>
-          <button class="rt-tab" id="tab-act" type="button" role="tab" aria-selected="false" data-pane="act">行事</button>
+          <button class="rt-tab" id="tab-route" type="button" role="tab" aria-selected="false" data-pane="route">路线</button>
+          <button class="rt-tab is-on" id="tab-act" type="button" role="tab" aria-selected="true" data-pane="act">行事</button>
         </div>
-        <div class="rt-pane" id="pane-route" role="tabpanel">
+        <div class="rt-pane" id="pane-route" role="tabpanel" hidden>
           <h2 class="hd3"><span class="ink-dot"></span>路线</h2>
           <div id="route-list"></div>
           <div class="meta" id="route-foot" style="margin-top:var(--sp-4)"></div>
         </div>
-        <div class="rt-pane" id="pane-act" role="tabpanel" hidden>
+        <div class="rt-pane" id="pane-act" role="tabpanel">
           <h2 class="hd3"><span class="ink-dot"></span>行事</h2>
           <div id="act-group"></div>
         </div>

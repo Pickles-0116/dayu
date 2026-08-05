@@ -786,7 +786,8 @@ button{ font:inherit; color:inherit; cursor:pointer; min-height:var(--hit-min); 
     max-height:calc(100vh - var(--bar-top) - var(--bar-bottom) - var(--sp-6)); overflow:auto; }
 }
 @media (max-width:767px){
-  .hud{ grid-template-columns:1fr; grid-template-areas:"attr" "event" "route"; }
+  /* v1.7.1:手机单列重排 行事(操作) → 事件 → 状态(属性),操作在上状态在下 */
+  .hud{ grid-template-columns:1fr; grid-template-areas:"route" "event" "attr"; }
   .origin-grid{ grid-template-columns:minmax(0,1fr); }
   .editorial{ width:calc(100% - 32px); padding-block:var(--sp-12) var(--sp-8); }
   .ending-frame{ padding:var(--sp-8) var(--sp-5); }

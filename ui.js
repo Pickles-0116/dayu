@@ -29,7 +29,7 @@ function cacheDom(){
 
 /* ───────── 右栏双 tab：路线 / 行事（v1.7 信息架构重构） ─────────
    行动组从底部 actionbar 移入右栏「行事」页；本会话记住上次 tab（内存级） */
-let RT_TAB = 'route';
+let RT_TAB = 'act';   /* v1.7.1:默认行事(开局+每岁均从行事开始) */
 function setRtTab(pane){
   RT_TAB = (pane==='act') ? 'act' : 'route';
   const tr = document.getElementById('tab-route');
@@ -177,6 +177,7 @@ function confirmOrigin(){
   drawFate();
   S.fateLastYear = S.age;
   switchScreen('scr-hud');
+  setRtTab(RT_TAB);   /* v1.7.1:开局默认「行事」(RT_TAB 初值 act) */
   render();
 }
 
@@ -210,6 +211,7 @@ function runEventQueue(evs){
 }
 function enterActionPhase(){
   S.phase = 'action'; S.actionDone = false;
+  setRtTab('act');   /* v1.7.1:每岁进入行动阶段自动切「行事」 */
   render();
 }
 function onActionClick(act){
@@ -333,7 +335,8 @@ function renderBadges(){
   const b = [];
   b.push(badge(S.world==='乱世'?'乱世':'治世', S.world==='乱世'?'badge--solid':''));
   b.push(badge(RANKS[S.rank]||'—',''));
-  if(S.sex) b.push(badge(S.sex,''));
+  /* v1.7.1:性别徽章暂隐藏 — 女性路线/原型适配后续更新再加(女性走男帝王史鉴不对) */
+  // if(S.sex) b.push(badge(S.sex,''));
   if(S.flags.修仙入门) b.push(badge('修仙','badge--gilt'));
   if(S.flags.野心) b.push(badge('野心',''));
   if(S.married) b.push(badge('已婚',''));
