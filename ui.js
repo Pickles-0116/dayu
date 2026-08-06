@@ -21,7 +21,7 @@ function cacheDom(){
     cultBlock:$('cult-block'), cultTier:$('cult-tier'), cultNum:$('cult-num'), cultFill:$('cult-fill'), cultNote:$('cult-note'),
     tagList:$('tag-list'), narrTitle:$('narr-title'), narrBody:$('narr-body'), logList:$('log-list'),
     routeList:$('route-list'), routeFoot:$('route-foot'),
-    actGroup:$('act-group'), fateSlot:$('fate-slot'), actHint:$('act-hint'), btnNext:$('btn-next-year'), btnFast:$('btn-fast'),
+    actGroup:$('act-group'), fateSlot:$('fate-slot'), actHint:$('act-hint'), btnNext:$('btn-next-year'),
     endingBody:$('ending-body'), legacyBody:$('legacy-body'),
     backdrop:$('backdrop'), modalRoot:$('modal-root'), toastRoot:$('toast-root'), veil:$('veil')
   };
@@ -190,35 +190,91 @@ function confirmOrigin(){
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   年回合循环：结算 → 事件 → 行动 → 更新
+   年回合循环（v1.8 重构）：行动 → N 年窗口（引擎 advanceByStage）→ 事件弹窗流 → 行动
+   「度过此 N 年」按钮 = 直接进窗口（无行动可做时的收尾）；行动后自动进窗口（doAction 内）
    ═══════════════════════════════════════════════════════════════════ */
 function advanceYear(){
-  if(!S || S.ended || S.phase!=='idle') return;
-  S.phase = 'busy';
-  render();
-  const notes = doSettle();
-  showSettleNotes(notes, function(){
-    if(S.pendingEnd){ setTimeout(finishToEnding, 900); return; }
-    /* v1.7 增补二 · 黑市商人：年推进后、主事件队列前 33% 判定，命中先逛摊 */
-    const shop = blackMarketRoll();
-    if(shop){ showShop(shop, function(){ runEventQueue(pickEvents()); }); return; }
-    runEventQueue(pickEvents());
+  passStage();
+}
+/* v1.8 增补 · 行动按钮 bug 根治（方案 B · 综合弹窗）
+   旧 runEventQueue 同步递归 showEvent + openModal 的 modalRoot.innerHTML='' 会清空前一个弹窗的
+   DOM 与其 click 监听器 → 前一个 onDone 永不触发 → 递归链断裂 → enterActionPhase 永不调用 →
+   phase 永远 busy → 行动按钮永久 disabled（窗口内 specials≥2 必触发）。
+   改为：窗口内所有特殊事件合并进「单」综合弹窗，按发生顺序逐个决策区，底部「完成」统一触发 onDone。
+   彻底绕开 openModal 清空 bug，且无递归链。 */
+function renderBatchEventModal(queue, onDone){
+  const modal = el('div','modal modal--batch');
+  modal.innerHTML =
+    '<div class="modal__type"><span class="badge badge--gilt">窗口要事</span></div>'
+    + '<h2 class="modal__title">此 '+L(stageN(S.age))+' 年间，有几桩要事须你决断</h2>'
+    + '<div class="batch-list" id="batch-list"></div>'
+    + '<div class="modal__foot"><button class="btn btn--primary" id="batch-done" type="button" disabled>完成</button></div>';
+  const list = modal.querySelector('#batch-list');
+  let pending = queue.length;
+  queue.forEach(function(item, qi){
+    const ev = item.ev;
+    /* variants 分支解析（同原 showEvent：命中第一个 hook 满足条件的分支即采用其 d/eff/l） */
+    if(ev.variants && ev.variants.length){
+      for(let vi=0; vi<ev.variants.length; vi++){
+        const v=ev.variants[vi];
+        if(v.hook && v.hook(S)){
+          if(v.d) ev.d=v.d;
+          if(v.eff){ if(!ev.opts[0].eff) ev.opts[0].eff={}; Object.assign(ev.opts[0].eff, v.eff); }
+          if(v.l) ev.opts[0].l=v.l;
+          break;
+        }
+      }
+    }
+    const isMain = item.kind==='main';
+    const block = el('div','batch-block'+(isMain?' batch-block--main':''));
+    block.innerHTML =
+      '<div class="batch-block__hd"><span class="badge ev-'+(ev.type||'通用')+'">'+(ev.type||'通用')+(isMain?' · 主线':'')+'</span><h3>'+esc(ev.t)+'</h3></div>'
+      + '<p class="batch-block__lead">'+esc(ev.d)+'</p>'
+      + '<div class="opts" data-block="'+qi+'"></div>';
+    const optsBox = block.querySelector('.opts');
+    ev.opts.forEach(function(opt, i){
+      const attrMet = !opt.req || Object.keys(opt.req).every(function(k){ return S.attrs[k]>=opt.req[k]; });
+      const fnMet   = !opt.reqFn || !!opt.reqFn(S);
+      const reqMet  = attrMet && fnMet;
+      let hint = opt.hint||'';
+      if(opt.p!==undefined){ const p=(typeof opt.p==='function')?opt.p(S):opt.p; hint = (hint?hint+' · ':'')+'成败 '+Math.round(p*100)+'%'; }
+      if(!attrMet){ hint = (hint?hint+' · ':'')+'需 '+Object.keys(opt.req).map(function(k){return k+'≥'+opt.req[k];}).join(' '); }
+      if(!fnMet){ hint = (hint?hint+' · ':'')+'需 '+(opt.reqText||'条件未足'); }
+      const o = el('button','opt'+(opt.danger?' opt--danger':''));
+      o.innerHTML = '<span class="opt__no">'+optLetter(i)+'</span>'
+                  + '<span><span>'+esc(opt.l)+'</span><span class="opt__hint">'+esc(hint)+'</span></span>';
+      if(!reqMet) o.disabled = true;
+      o.addEventListener('click', function(){
+        if(o.disabled) return;
+        const r = resolveOpt(opt, isMain?{rid:item.rid}:null);
+        optsBox.querySelectorAll('.opt').forEach(function(b){ b.disabled = true; });
+        o.classList.add('opt--chosen');
+        const resEl = el('div','result '+resClass(r.deltas));
+        resEl.innerHTML = '<p class="result__txt">'+esc(r.txt)+'</p>';
+        block.appendChild(resEl);
+        pending--; updateDoneBtn();
+        if(S.pendingEnd){ closeModal(); finishToEnding(); return; }
+      });
+      optsBox.appendChild(o);
+    });
+    /* 全选项不可选（时势未至）→ 自动跳过该块，避免卡死 */
+    if(!optsBox.querySelector('.opt:not(:disabled)')){
+      pending--;
+      const resEl = el('div','result');
+      resEl.innerHTML = '<p class="result__txt">时势未至，此事无从着手。</p>';
+      block.appendChild(resEl);
+    }
+    list.appendChild(block);
   });
-}
-/* v1.7 增补三 · R-3 toast 合并：单年 2–5 条串行 toast（520ms×N）压成 1 条年度摘要。
-   不快进也受益——每把纯等 2–4 分钟 → 近 0。 */
-function showSettleNotes(notes, done){
-  if(!notes.length){ setTimeout(done, 120); return; }
-  const loss = notes.some(function(n){ return n.c==='loss'||n.c==='danger'; });
-  toast('第 '+L(S.age)+' 年',
-        notes.map(function(n){ return n.x; }).join(' · '),
-        loss ? 'loss' : 'gain');
-  setTimeout(done, 420);
-}
-function runEventQueue(evs, onDone){
-  if(!evs.length){ if(onDone) onDone(); else enterActionPhase(); return; }
-  const item = evs.shift();
-  showEvent(item, function(){ runEventQueue(evs, onDone); });
+  const doneBtn = modal.querySelector('#batch-done');
+  function updateDoneBtn(){ doneBtn.disabled = pending > 0; }
+  updateDoneBtn();
+  doneBtn.addEventListener('click', function(){
+    closeModal();
+    if(S.pendingEnd) finishToEnding();
+    else onDone();
+  });
+  openModal(modal, { focusSel:'#batch-done', onEsc:null });
 }
 function enterActionPhase(){
   S.phase = 'action'; S.actionDone = false;
@@ -226,108 +282,44 @@ function enterActionPhase(){
   render();
 }
 
-/* ═══════════════ v1.7 增补三 · 快进（R-1 快进五年 + R-2 事件分层 + R-3 摘要） ═══════════════
-   快进 = 逐岁跑完整 doSettle/pickEvents（数值、flag、冷却、抽选全照常，与逐岁等价），
-   仅合并展示；停点（死亡/命运卡/转折flag/黑市/停事件）即停、处理完续跑；行动档位 A 每岁必停，
-   选完自动续跑剩余岁数。吞并的普通事件效果照常 applyEff + 记日志，只省弹窗。 */
-let FAST = null;   /* {left, h, money, yrs, notes} 本段快进状态 */
-
-function fastForward(n){
-  if(!S || S.ended || S.phase!=='idle' || FAST) return;
+/* ═══════════════ v1.8 · 时间步进重构（窗口结算 + 事件弹窗流） ═══════════════
+   1 行动 = N 年窗口（stageN 由引擎结算）；行动后自动进入窗口，无需「推进」逐岁点击。
+   窗口末渲染事件弹窗流：
+   ① 日常事件 toast 流（每事件 1 条轻量 toast · 默认给 · 无需选择，applyEff+日志已由引擎落盘）
+   ② 特殊事件弹窗队列（主线全弹 · 非主线封顶 2 个，按发生顺序逐个弹，玩家决策）
+   弹窗流处理完 → 进入行动阶段；步中死亡为唯一中途停点（直接进结局）。 */
+function renderStageWindow(q){
+  if(!S || !q){ enterActionPhase(); return; }
+  if(q.death){ setTimeout(finishToEnding, 900); return; }
+  /* ① 日常 toast 流：每事件 1 条，快速连续（650ms 间隔），非阻塞 */
+  q.dailies.forEach(function(d, i){
+    setTimeout(function(){
+      const loss = (d.deltas||[]).some(function(x){ return x.v<0; });
+      toast('第 '+L(d.age)+' 年 · '+esc(d.t), d.txt || '', loss?'loss':'');
+    }, i*650);
+  });
+  /* ② 特殊事件弹窗队列：主线全弹（不丢路线分歧选择），非主线封顶 2（超出静默结算默认分支） */
+  const queue = [];
+  q.specials.forEach(function(it){
+    if(it.kind==='main'){ queue.push(it); return; }
+  });
+  let cap = 0;
+  q.specials.forEach(function(it){
+    if(it.kind==='main') return;
+    if(cap >= 2){ resolveEventDefault(it); return; }   /* 超封顶非主线：默认分支结算 */
+    cap++; queue.push(it);
+  });
+  if(queue.length){
+    renderBatchEventModal(queue, function(){ enterActionPhase(); });
+  }else{
+    setTimeout(enterActionPhase, Math.max(350, q.dailies.length*650));
+  }
+}
+/* 「度过此 N 年」按钮（原「推进一年」位置）：无合适行动/不想行动时点击 = 直接进 N 年窗口 */
+function passStage(){
+  if(!S || S.ended || S.phase!=='idle') return;
   S.phase = 'busy'; render();
-  FAST = { left:n, h:0, money:0, yrs:0, notes:[], startAge:S.age };
-  ffYear();
-}
-function snapFlags(keys){
-  const out = {};
-  keys.forEach(function(k){ out[k] = !!S.flags[k]; });
-  return out;
-}
-function flagsChanged(before){
-  for(const k in before){ if(!!S.flags[k] !== before[k]) return true; }
-  return false;
-}
-function ffYear(){
-  if(!FAST || !S || S.ended) return;
-  const before = snapFlags(['家族破败','九死一生','仙缘','顿悟','野心']);
-  const h0 = S.health, m0 = S.money;
-  const notes = doSettle();
-  FAST.h += S.health - h0; FAST.money += S.money - m0; FAST.yrs++;
-  notes.forEach(function(n){
-    if(n.c==='danger' || n.t==='？' || n.t==='世道') FAST.notes.push(n.x);
-  });
-  if(S.pendingEnd){ ffEnd(true); setTimeout(finishToEnding, 900); return; }
-  /* 命运卡：仅「本段内新派发」的卡停（drawFate 每 3 年派发，drawnAge>段起始年即段内新卡）；
-     开局常驻的旧卡不拦——否则玩家从不点卡，快进每年都被旧卡卡停（实测「还是一年年过」）。 */
-  if(S.fate && S.fate.drawnAge > FAST.startAge){ ffEnd(); render(); return; }
-  if(flagsChanged(before)){ ffEnd(); render(); return; } /* 人生转折 flag：停 */
-  const shop = blackMarketRoll();                         /* 黑市：停（33% 每年照判，命中即停） */
-  if(shop){ ffEnd(); showShop(shop, function(){ runEventQueue(pickEvents()); }); return; }
-  const q = pickEvents();
-  const stops = [], swallows = [];
-  q.forEach(function(it){ (evSig(it)==='stop' ? stops : swallows).push(it); });
-  swallows.forEach(function(it){ resolveEventSilent(it); });   /* 吞并：效果照常、不弹窗 */
-  if(stops.length){ ffEnd(); runEventQueue(stops); return; }   /* 停事件：逐条处理 */
-  ffAction();
-}
-function ffAction(){
-  FAST.left--;
-  if(FAST.left<=0) ffEnd();
-  enterActionPhase();   /* 档位 A：每年行动必停；doAction 后自动续跑 */
-}
-function ffEnd(dead){
-  const f = FAST; FAST = null;
-  if(!S || S.ended) return;
-  /* 中途停止（命运卡/转折/黑市/停事件）须回 idle，否则「推进/快进」按钮滞留禁用 */
-  if(!dead && S.phase==='busy') S.phase = 'idle';
-  if(!f || dead || f.yrs < 2) return;
-  const parts = [];
-  if(f.h)  parts.push('健康 '+(f.h>0?'+':'')+f.h);
-  if(f.money) parts.push('财帛 '+(f.money>0?'+':'')+f.money);
-  if(f.notes.length) parts.push(f.notes.join(' · '));
-  if(parts.length) toast('快进 · '+f.yrs+' 年', parts.join(' · '), (f.h<0||f.money<0)?'loss':'gain');
-}
-/* 事件分层（R-2 · 默认分级 + 显式 sig）：
-   停：sig:'stop'（青楼/赌坊等坏事件）/ 主线 / 生涯 / once / 危机 / 任一分支持 end（有终局） */
-function evHasEnd(ev){
-  if(!ev || !ev.opts) return false;
-  return ev.opts.some(function(o){
-    return (o.ok && o.ok.eff && o.ok.eff.end) || (o.ko && o.ko.eff && o.ko.eff.end);
-  });
-}
-function evSig(item){
-  const ev = item.ev;
-  if(ev.sig === 'stop') return 'stop';
-  if(item.kind==='main' || item.kind==='career') return 'stop';
-  if(ev.once || ev.type==='危机') return 'stop';
-  if(evHasEnd(ev)) return 'stop';
-  return 'swallow';
-}
-/* 吞并事件的静默结算：variants 分支 + 首条可用选项 + 成败二元照常，效果落盘、日志留痕 */
-function resolveEventSilent(item){
-  const ev = item.ev;
-  if(ev.variants && ev.variants.length){
-    for(let vi=0; vi<ev.variants.length; vi++){
-      const v = ev.variants[vi];
-      if(v.hook && v.hook(S)){
-        if(v.d) ev.d = v.d;
-        if(v.eff){ if(!ev.opts[0].eff) ev.opts[0].eff={}; Object.assign(ev.opts[0].eff, v.eff); }
-        if(v.l) ev.opts[0].l = v.l;
-        break;
-      }
-    }
-  }
-  const isMain = item.kind==='main';
-  let opt = null;
-  for(let i=0; i<ev.opts.length; i++){
-    const o = ev.opts[i];
-    const attrMet = !o.req || Object.keys(o.req).every(function(k){ return S.attrs[k]>=o.req[k]; });
-    const fnMet   = !o.reqFn || !!o.reqFn(S);
-    if(attrMet && fnMet){ opt = o; break; }
-  }
-  if(!opt) return;
-  const r = resolveOpt(opt, isMain ? {rid:item.rid} : null);
-  pushLog(S.age, '（快进）'+ev.t+'：'+r.txt, '');
+  renderStageWindow(advanceByStage());
 }
 function onActionClick(act){
   if(S.phase!=='action' || S.actionDone || S.ended) return;
@@ -341,17 +333,26 @@ function doAction(act){
   S.actionDone = true;
   setRtTab('route');   /* v1.7:行动后自动切回「路线」,看路线进度反馈 */
   render();
-  if(S.pendingEnd){ FAST = null; setTimeout(finishToEnding, 500); return; }
+  if(S.pendingEnd){ setTimeout(finishToEnding, 500); return; }
   S.phase = 'idle'; S.actionDone = false;
   render();
-  /* v1.7 增补三 · 档位 A：快进中每岁行动必停，选完自动续跑剩余岁数 */
-  if(FAST && FAST.left>0){ setTimeout(ffYear, 250); }
+  /* v1.8 · 行动后自动进入 N 年窗口（无需再点「推进」）；doAction 是核心回合决策，先短暂展示结果再推进 */
+  setTimeout(function(){ renderStageWindow(advanceByStage()); }, 200);
 }
 
 /* ───────── 事件弹窗 ───────── */
 function resolveOpt(opt, ctx){
   let chosen;
-  if(opt.p!==undefined){ const p=(typeof opt.p==='function')?opt.p(S):opt.p; chosen = chance(p)?opt.ok:opt.ko; }
+  /* v1.8 黑市改造：左轮必胜——jun 链 active + 包里有 revolver + 选项有 p → 强制成功并消耗子弹 */
+  const hasRevolver = Array.isArray(S.bag) && S.bag.indexOf('revolver')>=0;
+  const junActive = !!(S.routes.jun && S.routes.jun.active);
+  if(hasRevolver && junActive && opt.p!==undefined){
+    chosen = opt.ok;
+    S.bag.splice(S.bag.indexOf('revolver'), 1);
+    pushLog(S.age, '「砰」——你抬腕扣动左轮，枪响处敌已倒地。', 'key');
+  } else if(opt.p!==undefined){
+    const p=(typeof opt.p==='function')?opt.p(S):opt.p; chosen = chance(p)?opt.ok:opt.ko;
+  }
   else chosen = opt.ok;
   const deltas = applyEff(chosen.eff, ctx);
   return { txt:chosen.txt, deltas:deltas };
@@ -361,58 +362,10 @@ function resClass(deltas){
   const g=deltas.filter(function(d){return d.v>0;}).length, l=deltas.filter(function(d){return d.v<0;}).length;
   if(g>l) return 'result--gain'; if(l>g) return 'result--loss'; return '';
 }
-function showEvent(item, onDone){
-  const ev = item.ev;
-  /* variants 分支解析：命中第一个 hook 满足条件的分支即采用其 d/eff/l */
-  if(ev.variants && ev.variants.length){
-    for(let vi=0; vi<ev.variants.length; vi++){
-      const v=ev.variants[vi];
-      if(v.hook && v.hook(S)){
-        if(v.d) ev.d=v.d;
-        if(v.eff){ if(!ev.opts[0].eff) ev.opts[0].eff={}; Object.assign(ev.opts[0].eff, v.eff); }
-        if(v.l) ev.opts[0].l=v.l;
-        break;
-      }
-    }
-  }
-  const isMain = item.kind==='main';
-  const modal = el('div','modal');
-  modal.innerHTML =
-    '<div class="modal__type"><span class="badge ev-'+(ev.type||'通用')+'">'+(ev.type||'通用')+'</span></div>'
-    + '<h2 class="modal__title">'+esc(ev.t)+'</h2>'
-    + '<p class="modal__lead">'+esc(ev.d)+'</p>'
-    + '<div class="opts" id="ev-opts"></div>';
-  const wrap = modal.querySelector('#ev-opts');
-  ev.opts.forEach(function(opt, i){
-    /* v1.6：req 只能表达属性门槛；reqFn/reqText 用于状态门槛（心境、旗标等） */
-    const attrMet = !opt.req || Object.keys(opt.req).every(function(k){ return S.attrs[k]>=opt.req[k]; });
-    const fnMet   = !opt.reqFn || !!opt.reqFn(S);
-    const reqMet  = attrMet && fnMet;
-    let hint = opt.hint||'';
-    if(opt.p!==undefined){ const p=(typeof opt.p==='function')?opt.p(S):opt.p; hint = (hint?hint+' · ':'')+'成败 '+Math.round(p*100)+'%'; }
-    if(!attrMet){ hint = (hint?hint+' · ':'')+'需 '+Object.keys(opt.req).map(function(k){return k+'≥'+opt.req[k];}).join(' '); }
-    if(!fnMet){ hint = (hint?hint+' · ':'')+'需 '+(opt.reqText||'条件未足'); }
-    const o = el('button','opt'+(opt.danger?' opt--danger':''));
-    o.innerHTML = '<span class="opt__no">'+optLetter(i)+'</span>'
-                + '<span><span>'+esc(opt.l)+'</span><span class="opt__hint">'+esc(hint)+'</span></span>';
-    if(!reqMet) o.disabled = true;
-    o.addEventListener('click', function(){
-      if(o.disabled) return;
-      const r = resolveOpt(opt, isMain?{rid:item.rid}:null);
-      showEventResult(modal, r, function(){ closeModal(); if(S.pendingEnd) finishToEnding(); else onDone(); });
-    });
-    wrap.appendChild(o);
-  });
-  openModal(modal, { focusSel:'#ev-opts .opt:not(:disabled)', onEsc:null });
-}
-function showEventResult(modal, r, onContinue){
-  modal.innerHTML =
-    '<div class="modal__type"><span class="badge">抉择</span></div>'
-    + '<h2 class="modal__title">—</h2>'
-    + '<div class="result '+resClass(r.deltas)+'"><p class="result__txt">'+esc(r.txt)+'</p></div>'
-    + '<div class="modal__foot"><button class="btn btn--primary" data-focus="1">继续</button></div>';
-  modal.querySelector('.modal__foot button').addEventListener('click', onContinue);
-}
+/* v1.8 增补：showEvent / runEventQueue / showEventResult 已删除——
+   原 runEventQueue 同步递归 showEvent + openModal 的 innerHTML='' 会清空前弹窗监听器，
+   导致 onDone 链断裂、phase 卡 busy、行动按钮永久 disabled。
+   由 renderBatchEventModal（单综合弹窗多决策区）取代，见 enterActionPhase 上方。 */
 function showConfirm(act, onYes){ showConfirmBox(act.confirm(S), onYes); }
 /* 通用二次确认：任何不可逆操作（行动 confirm / 路线转途）共用一套仪轨 */
 function showConfirmBox(c, onYes){
@@ -510,6 +463,25 @@ function useBagItem(gid){
   if(!g || !S.bag) return;
   const idx = S.bag.indexOf(gid);
   if(idx<0) return;
+
+  /* v1.8 增补：mech 特殊道具分支（长生不老丹药·半成品） */
+  if(g.mech==='changsheng'){
+    S.bag.splice(idx,1);
+    if(chance(.2)){                         /* 20% 永生不老：从此不消耗健康值 */
+      S.flags.永生不老 = true;
+      applyEff({h: 9999}, null);            /* 回满当前健康 */
+      const txt = '丹气氤氲，须发返青——火候虽欠，竟蒙天眷，肉身不腐，寿元无尽！';
+      pushLog(S.age, '服「长生不老丹药·半成品」：'+txt, 'key');
+      toast('服 · 半成品丹药', txt, 'gain');
+      render();
+    } else {                               /* 80% 丹毒暴毙：直接死亡 */
+      pushLog(S.age, '服「长生不老丹药·半成品」：丹毒翻涌，七窍流血，立毙。', 'key');
+      S.pendingEnd = 'danbi';
+      finishToEnding();                     /* 立即进入终局 */
+    }
+    return;
+  }
+
   const deltas = applyEff(g.eff, null);
   S.bag.splice(idx,1);
   pushLog(S.age, '用「'+g.n+'」：'+(g.useTxt||'—'), '');
@@ -527,8 +499,12 @@ function render(){
   dom.hudAge.classList.remove('is-tick'); void dom.hudAge.offsetWidth; dom.hudAge.classList.add('is-tick');
   renderBadges(); renderAttr(); renderAxis(); renderHealth(); renderCult(); renderMoney();
   renderTags(); renderRoutes(); renderNarr(); renderLog();
-  renderFate(); renderActions(); renderBag(); renderRouteFoot();
+  renderFate(); renderActions(); renderBag(); renderRouteFoot(); renderBlackMarket();
   dom.btnNext.disabled = !(S.phase==='idle' && !S.ended);
+  /* v1.8 · 「度过此 N 年」按钮文案随阶段步长变化 */
+  if(dom.btnNext && typeof stageN==='function'){
+    dom.btnNext.textContent = '度过此 '+stageN(S.age)+' 年';
+  }
 }
 function renderBadges(){
   const b = [];
@@ -865,7 +841,7 @@ function renderActions(){
   });
   dom.actHint.textContent = S.ended ? '—'
     : (S.phase==='action' ? (S.actionDone?'今年已行事':'择一事以度此年')
-    : '（待推进一岁）');
+    : '（度过此 '+(typeof stageN==='function'?stageN(S.age):'N')+' 年）');
 }
 /* v1.7 增补二 · 包袱：行事页展示持有型道具（点击即用） */
 function renderBag(){
@@ -882,6 +858,21 @@ function renderBag(){
     b.addEventListener('click', function(){ useBagItem(b.dataset.bag); });
   });
 }
+/* v1.8 · 行事页「黑市 ×1」按钮：窗口判定命中置 S.blackMarketChance=1 → 按钮出现；
+   点击强制出摊（blackMarketRoll(true)），关窗后计数归零按钮消失 */
+function renderBlackMarket(){
+  const wrap = document.getElementById('bm-slot');
+  if(!wrap || !S) return;
+  if(!S.blackMarketChance){ wrap.hidden = true; return; }
+  wrap.hidden = false;
+  wrap.innerHTML = '<button class="btn btn--bm" id="btn-bm" type="button">黑市 ×1</button>';
+  const b = document.getElementById('btn-bm');
+  if(b) b.addEventListener('click', function(){
+    const shop = blackMarketRoll(true);
+    if(!shop){ S.blackMarketChance = 0; render(); return; }
+    showShop(shop, function(){ S.blackMarketChance = 0; render(); });
+  });
+}
 function renderRouteFoot(){
   const active = Object.keys(S.routes).filter(function(id){ return S.routes[id].active; });
   dom.routeFoot.innerHTML = active.length
@@ -893,17 +884,17 @@ function renderRouteFoot(){
    结局 / 传承
    ═══════════════════════════════════════════════════════════════════ */
 function finishToEnding(){
-  FAST = null;   /* 快进终止（任何入结局路径先清段状态） */
   const res = resolveOutcome();
   S.ended = true;
-  renderEnding(res.ach, res.death);
+  renderEnding(res.ach, res.death, res.eraseAch);
 }
-function renderEnding(ach, death){
+function renderEnding(ach, death, eraseAch){
   const aE = (ach && typeof ENDINGS!=='undefined' && ENDINGS[ach]) ? ENDINGS[ach] : null;
   const dE = ENDINGS[death] || ENDINGS.pingdan;
   const fatal = (dE.k==='bad');
-  /* primary 为落图鉴与计分主键，与 engine.resolveOutcome 一致：凶终抹去成就铭文 */
-  const primary = (ach && aE && !fatal && ach!==death) ? ach : death;
+  /* primary 为落图鉴与计分主键，与 engine.resolveOutcome 一致：
+     v1.8 结局闭环·修复3：honorable 凶终（eraseAch 为假）以成就为主键，仅被抹（身败类）或同名时回退死法 */
+  const primary = (ach && aE && !eraseAch && ach!==death) ? ach : death;
   const primaryIsAch = (primary===ach && !!aE);
   /* P1-4 评级：先算分（此时 dex 尚未写入，isNew 判定才准确），再录双卷 */
   const score  = lifeScore(primary);
@@ -1155,7 +1146,6 @@ function bindStatic(){
   dom.btnReroll.addEventListener('click', reroll);
   dom.btnConfirm.addEventListener('click', confirmOrigin);
   dom.btnNext.addEventListener('click', advanceYear);
-  if(dom.btnFast) dom.btnFast.addEventListener('click', function(){ fastForward(5); });
   dom.backdrop.addEventListener('click', function(){ if(MODAL_ONESC) MODAL_ONESC(); });
   /* v1.7:右栏双 tab「路线 / 行事」 */
   const tabR = document.getElementById('tab-route');

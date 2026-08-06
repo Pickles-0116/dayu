@@ -53,23 +53,28 @@ const ORIGINS = [
 
 /* ───────── ② 路线门槛表（9 条 · 年龄 × 属性 × 事件/状态 三因子） ───────── */
 const ROUTES = [
- {id:'jun',  n:'从军',      kind:'明线', layer:'立身', age:16, attr:{武:5,体:4},
+ {id:'jun',  n:'从军',      kind:'明线', layer:'立身', age:16, attr:{武:8,体:5},
   condText:'需 入伍／战乱之机', cond:s=>true, chain:'jun',
   desc:'投身行伍，以军功博出身。', vis:()=>true},
- {id:'shang',n:'从商',      kind:'明线', layer:'立身', age:22, attr:{财:5},
+ {id:'shang',n:'从商',      kind:'明线', layer:'立身', age:22, attr:{财:8},
   condText:'需 本金或家底', cond:s=>true, chain:'shang',
   desc:'积本钱、贩四方，以货殖立身。', vis:()=>true},
- {id:'zheng',n:'从政',      kind:'明线', layer:'立身', age:18, attr:{才:5,智:4},
+ {id:'zheng',n:'从政',      kind:'明线', layer:'立身', age:18, attr:{才:8,智:5},
   condText:'需 蒙学已成；贱籍／罪籍受限', cond:s=>!(s.rank===0),
   chain:'zheng', desc:'赴考取功名，由科举入仕。', vis:()=>true,
   denyText:'贱籍不得应试 · 须先脱籍'},
- {id:'yi',   n:'从医',      kind:'明线', layer:'立身', age:16, attr:{才:4,智:2},
+ {id:'yi',   n:'从医',      kind:'明线', layer:'立身', age:16, attr:{才:5,智:8},
   condText:'需 习医启蒙', cond:s=>true, chain:'yi',
   desc:'悬壶坐堂，医道亦是仕途外的一条正路。', vis:()=>true},
  {id:'xian', n:'修仙',      kind:'暗线', layer:'出世', age:0,  attr:{},
-  condText:'仙缘未至', cond:s=>!!(s.flags.仙缘||s.flags.始皇求仙||s.flags.取经悟道||s.flags.始皇遗脉||s.flags.金蝉遗蜕), chain:'xian',
-  desc:'家族破败、九死一生之后的一线渺茫；亦为仙帝遗脉与金蝉遗蜕所承。',
-  vis:s=>!!((s.flags.家族破败&&s.flags.九死一生)||s.flags.始皇求仙||s.flags.取经悟道||s.flags.始皇遗脉||s.flags.金蝉遗蜕)},
+  condText:'仙缘未至 / 破书强入', /* v1.8 黑市改造：凡人+心境≥10+道德≥10+持空白书籍 可强入 xian */
+  cond:s=>!!(s.flags.仙缘||s.flags.始皇求仙||s.flags.取经悟道||s.flags.始皇遗脉||s.flags.金蝉遗蜕)
+        || (s.mind>=10 && s.moral>=10 && Array.isArray(s.bag) && s.bag.indexOf('blankbook')>=0),
+  vis:()=>true,   /* v1.8 修复：routeState(r) 调 r.vis(S)，缺 vis 视作 undefined → 永远 hidden；
+                     凡人持空白书籍强入 xian 的卡片也需可见（cond 已放开门槛），故 vis 恒 true，
+                     不再按仙缘类 flag 限制可见性（此前重复 vis 覆盖此项，导致强入判定形同虚设） */
+  chain:'xian',
+  desc:'家族破败、九死一生之后的一线渺茫；亦为仙帝遗脉与金蝉遗蜕所承。'},
  {id:'duodi',n:'夺嫡',      kind:'暗线', layer:'夺权', age:20, attr:{望:5,脉:4},
   condText:'需 宗籍在册 · 已退出者不复入局', cond:s=>!!s.royal && !s.flags.安分宗亲, chain:'duodi',
   desc:'宗室之内，一步登天或一步殒身。', vis:s=>!!s.royal},
@@ -1910,15 +1915,24 @@ const INHERIT_ORIGIN_RULES = {
    use:'instant' 买即生效；use:'hold' 存入 S.bag，经「行事·包袱」使用（useEff 生效）。
    保命符特殊：非使用型，佩于身（flags.保命符），濒死时在 doSettle 触发免死一次。 */
 const BLACKMARKET_GOODS = [
- {id:'bingqi',  n:'朴刀',     d:'百炼钢打，刃口一线寒光。',            use:'instant', price:15, eff:{a:{武:1}}},
- {id:'jingjuan',n:'经卷',     d:'残经一卷，读之如闻梵音。',            use:'hold',    price:12, eff:{flags:['向道'],tags:['佛缘']}, useTxt:'你展卷夜读，字字入心。'},
- {id:'huichun', n:'回春丹',   d:'青瓷瓶装，丹如赤豆。',                use:'hold',    price:10, eff:{h:20}, useTxt:'你服下回春丹，一股暖意流遍四肢。'},
- {id:'baoming', n:'保命符',   d:'黄纸朱砂，画的符不知哪门哪派。',      use:'hold',    price:25, eff:{flags:['保命符']}, useTxt:'你把保命符贴身藏好，隐约觉得心安。'},
- {id:'miji',    n:'武功秘籍', d:'封皮已烂，拳路却还认得清。',          use:'hold',    price:20, eff:{a:{武:2}}, useTxt:'你按图演练三月，出手又快了一分。'},
- {id:'yishu',   n:'医书',     d:'手抄本，批注密密麻麻。',              use:'hold',    price:14, eff:{a:{才:1,望:1}}, useTxt:'你通读医书，又记下数方，名望渐起。'},
- {id:'xianqi',  n:'仙缘奇物', d:'一枚无名兽骨，入手温热，似有呼吸。',  use:'hold',    price:30, eff:{flags:['仙缘']}, useTxt:'你摩挲兽骨，冥冥中似有一线感应。'},
- {id:'minghua', n:'名画古董', d:'前朝某公的山水，落款半真半假。',      use:'instant', price:25, eff:{money:60}},
- {id:'tianqi',  n:'田契',     d:'城南二十亩水田，佃户年年纳租。',      use:'instant', price:22, eff:{a:{财:1}}}
+ /* v1.8 黑市道具重置（按《游戏全书》§四 12 件新货）：
+    4.1 常规 4（明线各 1 件，数值 +1）· 4.2 药 4（健康 + 寿元上限 ±N）· 4.3 特殊稀有 4（mech 分支）
+    旧"保命符/经卷/仙缘奇物/武功秘籍/医书/名画古董/田契/朴刀"全部移除；新货全 use:'hold'。 */
+ /* 4.1 常规道具 */
+ {id:'wujing',   n:'武经总要', d:'百炼兵书，读之技痒。',       use:'hold', price:12, eff:{a:{武:1}}, useTxt:'你挑灯夜读兵书，出手又快了一分。'},
+ {id:'taozhu',   n:'陶朱商经', d:'货殖心法，陶朱遗意。',       use:'hold', price:12, eff:{a:{财:1}}, useTxt:'你通读商经，算盘拨得更响了。'},
+ {id:'shitu',    n:'仕途要览', d:'为官箴言，仕途津逮。',       use:'hold', price:12, eff:{a:{才:1}}, useTxt:'你展卷研读，胸中多了几分章法。'},
+ {id:'bencao',   n:'本草集注', d:'医道典籍，习之增识。',       use:'hold', price:12, eff:{a:{智:1}}, useTxt:'你披阅本草，识得更多药性。'},
+ /* 4.2 药（健康 + 寿元上限 ±N） */
+ {id:'huichun',  n:'回春丹',   d:'青瓷瓶装，丹如赤豆。',       use:'hold', price:12, eff:{h:10}, useTxt:'你服下回春丹，一股暖意流遍四肢。'},
+ {id:'snakewine',n:'烈性蛇酒', d:'猛药回血，却伤本元。',       use:'hold', price:18, eff:{h:25, healthMax:-5}, useTxt:'酒入喉如刀，回血亦折寿。'},
+ {id:'fuwater',  n:'中药符水', d:'大补，代价是寿元大降。',     use:'hold', price:30, eff:{h:50, healthMax:-10}, useTxt:'符水灌下，回血最猛，本元亦亏。'},
+ {id:'yanshou',  n:'延寿丹',   d:'不回血，只抬升寿元上限。',   use:'hold', price:35, eff:{healthMax:10}, useTxt:'你服下延寿丹，筋骨似被温养。'},
+ /* 4.3 特殊稀有道具（mech 分支：useBagItem 处理） */
+ {id:'blankbook',n:'空白书籍', d:'无字之书，似有所待。',       use:'hold', price:40, mech:'blankbook'},
+ {id:'poying',   n:'破婴丹',   d:'元婴突破时服，成算大增。',   use:'hold', price:30, mech:'poying'},
+ {id:'changsheng',n:'长生不老丹药·半成品', d:'火候未到，凶吉参半。', use:'hold', price:50, mech:'changsheng'},
+ {id:'revolver', n:'左轮·一颗子弹', d:'非本时代之物，寒光慑人。', use:'hold', price:45, mech:'revolver'}
 ];
 
 /* ───────── ⑥ 结局表（终局 42 + 过程坏结局 26 = 68） ───────── */
@@ -2032,7 +2046,17 @@ const ENDINGS = {
  b23:{n:'合欢覆灭', k:'bad', b:'邪教 · 殁',
   ep:'坛破之日，男女皆缚。长老就戮前犹言：采补长生，本是虚妄。宗主叹曰：早知如此，不如当日便退。然一念之迷，遂至族灭。史册不书其名，只曰：妖党伏诛。'},
  b24:{n:'赌债逼死', k:'bad', b:'风月 · 殁',
-  ep:'先是输了本钱，再是输了铺面，最后输了自己。债主上门那日，你把自己典了最后一注。井绳断裂的声响，惊起邻家一树寒鸦。巷议：好赌败家，是自取的。'}
+  ep:'先是输了本钱，再是输了铺面，最后输了自己。债主上门那日，你把自己典了最后一注。井绳断裂的声响，惊起邻家一树寒鸦。巷议：好赌败家，是自取的。'},
+ danbi:{n:'丹毒暴毙', k:'bad', b:'横死 · 丹',
+  ep:'黑市求得半炉丹药，火候未到便急急吞下。初觉丹田灼热，继而七窍渗血，不及唤人，已僵坐椅中。郎中验过，只摇头：汞石之毒，入髓无救。巷议：贪生者，反速死。'},
+ /* v1.8 结局闭环·修复2：帝王/位面之子 夺权坏结局重映射专用死法（b19→longYu、b20→qinZheng、b20b→longYu）。
+    二者 k 仍为 bad（仍是"非命"），但不在 ENDING_ERASE_ACH 中 → 成就照常保留（帝王战死/被弑仍录雄主守成/光武中兴）。 */
+ qinZheng:{n:'御驾亲征殒阵', k:'bad', b:'过程坏结局 · 帝',
+  ep:'六师出塞，天寒地冻，帝崩于榆木川军中。龙旗半卷，将士缟素还朝。',
+  hist:{who:'明成祖 朱棣', era:'1360–1424', txt:'五出漠北，崩于榆木川行辕。杨荣、金幼孜秘不发丧，熔锡为椑，载以龙辇还京。'}},
+ longYu:{n:'龙驭宾天', k:'bad', b:'过程坏结局 · 帝',
+  ep:'禁中祸变，变起肘腋，帝王暴崩。史官讳笔，但书「龙驭上宾」四字。',
+  hist:{who:'历代非正常崩逝之君', era:'—', txt:'宫车晏驾，史书讳饰。或云遇弑，或云幽死，皆付「龙驭上宾」四字，不言其详。'}}
 };
 
 /* ───────── ⑥b 结局评级 · 品第（P1-4） ─────────

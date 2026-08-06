@@ -24,14 +24,17 @@ const NAMES = ['砚','昭','衡','珩','翎','珏','岐','澈','徵','稷','翊'
 
 /* ───────── 全局 · 家族档案（跨代 meta，localStorage 兜底） ─────────
    dex   ：结局图鉴（P1-4）—— { 结局id: {c:遇见次数, s:最高得分, g:最高品第, a:享年} }
-   lives ：累计游玩世数（含幼殇／乞丐夭折） */
+   lives ：累计游玩世数（含幼殇／乞丐夭折）
+   v1.8 版本隔离：key 由 dayu_house_v1 → dayu_house_v18，旧档一律不读取（用户拍板）——
+   旧 key 数据保留不删不覆盖，静默迁移为空档新档。 */
+const META_KEY = 'dayu_house_v18';
 function metaDefaults(){
   return { gens:0, year:17, trainAttr:null, houseTags:[], lastEnding:null, lastTier:null,
            dex:{}, dexId:{}, dexDeath:{}, lives:0 };
 }
 let META = metaDefaults();
 function loadMeta(){
-  try{ const raw = localStorage.getItem('dayu_house_v1');
+  try{ const raw = localStorage.getItem(META_KEY);
     if(raw){ const o=JSON.parse(raw); if(o&&typeof o==='object') META=Object.assign(META,o); }
   }catch(e){ /* file:// 下 localStorage 可能不可用，静默降级 */ }
   if(!META.dex || typeof META.dex!=='object') META.dex = {};   // 旧存档兼容
@@ -41,7 +44,7 @@ function loadMeta(){
   if(typeof META.lives!=='number') META.lives = 0;
 }
 function saveMeta(){
-  try{ localStorage.setItem('dayu_house_v1', JSON.stringify(META)); }catch(e){}
+  try{ localStorage.setItem(META_KEY, JSON.stringify(META)); }catch(e){}
 }
 function resetMeta(){ META = metaDefaults(); saveMeta(); }
 
@@ -126,6 +129,7 @@ function newLife(origin){
     rank: rank, tags: origin.tags.concat(inhTags), flags:{}, pauper:!!origin.pauper, debt:!!origin.debt,
     world: chance(.3)?'乱世':'治世',
     merit:0, incense:0, cult:0, xianTier:-1, hanghai:0,     /* v1.7 C线：航海外交计数（郑和锁 7） */
+    blackMarketChance:0,                                     /* v1.8：黑市窗口判定命中置 1（行事页按钮化） */
     married:false, children:[],
     routes:{}, phase:'idle', queue:[], actionDone:false, ended:false, pendingEnd:null,
     fate:null, fateLastYear:-1,                              /* 机遇卡槽 */
@@ -211,6 +215,13 @@ function applyEff(eff, ctx){
   if(eff.merit){ S.merit=Math.max(0,S.merit+eff.merit); deltas.push({k:'军功', v:eff.merit}); }
   if(eff.incense){ S.incense=Math.max(0,S.incense+eff.incense); deltas.push({k:'香火', v:eff.incense}); }
   if(eff.cult){ S.cult=Math.max(0,S.cult+eff.cult); deltas.push({k:'修为', v:eff.cult}); }
+  /* v1.8 黑市：健康上限 ±N（蛇酒/符水/延寿丹；上限下调时 health 随之封顶） */
+  if(eff.healthMax){
+    const b=S.healthMax;
+    S.healthMax = clamp(S.healthMax + eff.healthMax, 1, 999);
+    if(S.health > S.healthMax) S.health = S.healthMax;
+    if(S.healthMax - b !== 0) deltas.push({k:'寿元上限', v:S.healthMax - b});
+  }
   if(eff.money){ const b=S.money; S.money=clampMoney(S, S.money+eff.money); if(S.money-b!==0) deltas.push({k:'财帛', v:S.money-b}); }
   if(eff.rank!==undefined && eff.rank>S.rank){ S.rank=eff.rank; pushLog(S.age,'身份升至「'+RANKS[S.rank]+'」','key'); }
   if(eff.tags) eff.tags.forEach(function(t){ if(S.tags.indexOf(t)<0) S.tags.push(t); });
@@ -339,6 +350,20 @@ function doBreakthrough(){
   if(S.xianTier>=5) return;
   const need = xianNeed(S.xianTier);
   if(S.cult<need) return;
+  /* v1.8 黑市改造：突破不再 100% 成功——基础概率 70%（有仙缘/仙胄/始皇求仙/取经悟道），
+     凡人 50%；持破婴丹 → 统一 70%；凡人 + 持空白书籍 + 无破婴丹 → 必失败（概率归 0）。 */
+  const hasXianRoot = !!(S.flags.仙缘||S.flags.始皇求仙||S.flags.取经悟道
+                          ||S.flags.始皇遗脉||S.flags.金蝉遗蜕||S.flags.仙帝);
+  const hasPoying = Array.isArray(S.bag) && S.bag.indexOf('poying')>=0;
+  const hasBlankbook = Array.isArray(S.bag) && S.bag.indexOf('blankbook')>=0;
+  /* 凡人（无仙缘根）持空白书籍且无破婴丹 → 强行入道者根基虚浮，突破必败；
+     注意不依赖 inXianRoute——凡人强入 xian 后 inXianRoute 即 true，若依赖它则必败永不触发 */
+  const isBlankBookMortal = hasBlankbook && !hasPoying && !hasXianRoot;
+  const p = isBlankBookMortal ? 0 : (hasPoying ? 0.70 : (hasXianRoot ? 0.70 : 0.50));
+  if(!chance(p)){
+    pushLog(S.age, '突破失败——真气逆散，尚需沉淀。', 'danger');
+    return;
+  }
   S.cult -= need; S.xianTier += 1;
   S.healthMax = XIAN_CAP[S.xianTier];
   S.health = S.healthMax;
@@ -375,7 +400,9 @@ function fateEffText(eff){
   return parts.join(' · ');
 }
 function onFateClick(){
-  if(S.phase!=='idle' || S.ended || !S.fate) return;
+  /* v1.8 修复：机遇卡（机缘）点击门槛放行 v1.8 可交互相位 'action'
+     （旧 'idle' 与 v1.8 时间步进后的实际相位永不相交，导致机缘整局点不动） */
+  if((S.phase!=='action' && S.phase!=='idle') || S.ended || !S.fate) return;
   const c = S.fate;
   const eff = c.eff;
   const deltas = applyEff(eff, null);
@@ -447,12 +474,12 @@ function activateRoute(id, silent){
   if(r) pushLog(S.age, '入「'+r.n+'」之途。', 'key');
   if(id==='xian') S.flags.修仙入门 = true;
 }
-/* 从业要求随年龄变严（v1.6 F-R2：7 岁 → 6 岁一档，收紧大器晚成）：
-   每过 6 岁，各属性门槛 +1，至 ATTR_CAP 封顶 */
+/* 从业要求随年龄变严（v1.8：6 岁一档 → 4 岁一档，进一步收紧大器晚成）：
+   每过 4 岁，各属性门槛 +1，至 ATTR_CAP 封顶 */
 function routeReqAt(r, age){
   const out = {};
   for(const k in r.attr){
-    const extra = Math.floor(Math.max(0, age - (r.age||18)) / 6);
+    const extra = Math.floor(Math.max(0, age - (r.age||18)) / 4);
     out[k] = Math.min(ATTR_CAP, r.attr[k] + extra);
   }
   return out;
@@ -509,9 +536,9 @@ function clampMoney(s, v){ return Math.max(moneyFloor(s), v); }
 /* ───────── v1.7 增补二 · 黑市商人（正向日常 · 33% 年判定） ─────────
    由 advanceYear（正常年）与 fastForward（快进年）调用；命中返回 {goods:3, refresh:1, buy:2}，
    未命中返回 null。不占主事件名额（独立于 pickEvents 队列）。 */
-function blackMarketRoll(){
+function blackMarketRoll(force){
   if(typeof BLACKMARKET_GOODS==='undefined' || !BLACKMARKET_GOODS.length) return null;
-  if(!chance(.33)) return null;
+  if(!force && !chance(.33)) return null;
   const pool = BLACKMARKET_GOODS.slice(), goods = [];
   while(goods.length<3 && pool.length){
     goods.push(pool.splice(ri(0,pool.length-1),1)[0]);
@@ -522,9 +549,9 @@ function blackMarketRoll(){
 /* ───────── 阶段 ①：结　算 ───────── */
 function decayFor(age){
   if(age<15) return 0;
-  if(age<=35) return ri(1,2);
-  if(age<=55) return ri(3,4);
-  return ri(5,8);
+  if(age<=40) return ri(0,1);   /* v1.8 修复1：发育/壮年快进每 2 年约掉 1，留容错（原 15-35 ri(1,2)） */
+  if(age<=55) return ri(2,3);   /* 原 ri(3,4) */
+  return ri(3,5);               /* 原 ri(5,8)，晚年仍陡峭保命运感 */
 }
 /* §2.4 年龄衰减：盛年一过，体魄与才思逐年折损，压制「越老越强」的曲线畸变。
    40 起 体 每 5 年 −1；50 起 武／魅 每 5 年 −1；60 起 才／智 每 5 年 −1；
@@ -552,18 +579,22 @@ function doSettle(){
     notes.push({t:'世道',x:'天下入'+S.world, c:(S.world==='乱世'?'danger':'gain')});
     pushLog(S.age, '天下入'+S.world+'。', 'key'); }
 
-  /* 健康衰减（修仙境界降低衰减） */
-  let dec = decayFor(S.age);
-  if(S.xianTier>=0) dec = Math.max(0, Math.round(dec*(1-(S.xianTier+1)*0.22)));
-  if(dec>0){ S.health = clamp(S.health-dec, -999, S.healthMax);
-    notes.push({t:'年岁',x:'健康 －'+dec, c:'loss'}); }
-  if(S.age>55 && S.xianTier<0 && chance(.22)){
-    const ill = ri(3,9); S.health -= ill;
-    notes.push({t:'病痛',x:'偶感风寒，健康 －'+ill, c:'loss'});
-    pushLog(S.age, '偶感风寒，卧床旬日。', ''); }
+  /* 健康衰减（修仙境界降低衰减；永生不老则形神不腐，豁免全部衰减与寿命检定） */
+  if(S.flags.永生不老){
+    notes.push({t:'仙缘',x:'服丹得道，肉身不腐', c:'gain'});
+  } else {
+    let dec = decayFor(S.age);
+    if(S.xianTier>=0) dec = Math.max(0, Math.round(dec*(1-(S.xianTier+1)*0.22)));
+    if(dec>0){ S.health = clamp(S.health-dec, -999, S.healthMax);
+      notes.push({t:'年岁',x:'健康 －'+dec, c:'loss'}); }
+    if(S.age>55 && S.xianTier<0 && chance(.22)){
+      const ill = ri(3,9); S.health -= ill;
+      notes.push({t:'病痛',x:'偶感风寒，健康 －'+ill, c:'loss'});
+      pushLog(S.age, '偶感风寒，卧床旬日。', ''); }
+  }
 
-  /* 年龄衰减（§2.4）：修仙者形骸已易，不受此限 */
-  if(S.xianTier<0){
+  /* 年龄衰减（§2.4）：修仙者形骸已易，永生不老者亦不受此限 */
+  if(S.xianTier<0 && !S.flags.永生不老){
     const worn = ageDecay(S.age, S.attrs);
     if(worn.length){
       notes.push({t:'岁月', x:worn.map(function(k){return k+' －1';}).join(' · '), c:'loss'});
@@ -571,20 +602,14 @@ function doSettle(){
     }
   }
 
-  /* 寿命检定（v1.7 增补二：保命符濒死免死一次） */
-  if(S.health<=0){
-    if(S.flags.保命符){
-      S.flags.保命符 = false; S.health = 1;
-      notes.push({t:'保命',x:'护符应声而碎，捡回一命', c:'gain'});
-      pushLog(S.age, '贴身的保命符应声而碎，你捡回一条命。', 'key');
-    }else{
-      S.pendingEnd = judgeNaturalDeath(true); return notes;
-    }
+  /* 寿命检定（v1.8 黑市改造：保命符已从商品池移除，濒死免死机制一并删除） */
+  if(!S.flags.永生不老 && S.health<=0){
+    S.pendingEnd = judgeNaturalDeath(true); return notes;
   }
   /* v1.7 增补一 · 花柳直判（用户拍板：不走危机事件，结算期直接判死）：
      染花柳后，年满 max(35, 染龄) 即腐朽而终（b22）。 */
   if(S.flags.花柳 && S.age>=Math.max(35, S.ageAt染||35)){ S.pendingEnd = 'b22'; return notes; }
-  if(S.age>=S.lifespan){ S.pendingEnd = judgeNaturalDeath(false); return notes; }
+  if(!S.flags.永生不老 && S.age>=S.lifespan){ S.pendingEnd = judgeNaturalDeath(false); return notes; }
 
   /* 家族破败闸门 & 仙缘 */
   if(!S.flags.家族破败 && S.attrs.财<=1 && S.attrs.望<=1 && S.age>=16){
@@ -693,6 +718,102 @@ function pickEvents(){
   return q.slice(0,2);
 }
 
+/* ═══════════════ v1.8 · 时间步进重构（1 行动 = N 年窗口） ═══════════════
+   机制：内部逐年结算不动（doSettle×N / pickEvents×N 原样调用），只压缩玩家停点粒度。
+   分阶段步长（用户拍板 5/3/2/1 · 前疏后密）：6–15 → 5 年；16–40 → 3 年；41–60 → 2 年；61–90 → 1 年。
+   唯一中途停点：死亡（逐年检定，pendingEnd 置位即中断窗口）。
+   事件分层复用 evSig（自 ui.js 移入）：stop → 特殊事件（窗口末弹窗）；swallow → 日常默认给（toast）。 */
+function stageN(age){
+  if(age<=15) return 5;
+  if(age<=40) return 3;
+  if(age<=60) return 2;
+  return 1;
+}
+/* 事件分层（R-2 · 默认分级 + 显式 sig）：
+   stop → 特殊事件（需玩家选择）：主线/生涯/危机/once/显式 sig:'stop'/任一分支持 end（有终局） */
+function evHasEnd(ev){
+  if(!ev || !ev.opts) return false;
+  return ev.opts.some(function(o){
+    return (o.ok && o.ok.eff && o.ok.eff.end) || (o.ko && o.ko.eff && o.ko.eff.end);
+  });
+}
+function evSig(item){
+  const ev = item.ev;
+  if(ev.sig === 'stop') return 'stop';
+  if(item.kind==='main' || item.kind==='career') return 'stop';
+  if(ev.once || ev.type==='危机') return 'stop';
+  if(evHasEnd(ev)) return 'stop';
+  return 'swallow';
+}
+/* 日常事件「默认给」结算：variants 分支 + 首条可用选项 + 成败二元照常；效果落盘，返回 {t,txt} 供 toast */
+function resolveEventDefault(item){
+  const ev = item.ev;
+  if(ev.variants && ev.variants.length){
+    for(let vi=0; vi<ev.variants.length; vi++){
+      const v = ev.variants[vi];
+      if(v.hook && v.hook(S)){
+        if(v.d) ev.d = v.d;
+        if(v.eff){ if(!ev.opts[0].eff) ev.opts[0].eff={}; Object.assign(ev.opts[0].eff, v.eff); }
+        if(v.l) ev.opts[0].l = v.l;
+        break;
+      }
+    }
+  }
+  const isMain = item.kind==='main';
+  let opt = null;
+  for(let i=0; i<ev.opts.length; i++){
+    const o = ev.opts[i];
+    const attrMet = !o.req || Object.keys(o.req).every(function(k){ return S.attrs[k]>=o.req[k]; });
+    const fnMet   = !o.reqFn || !!o.reqFn(S);
+    if(attrMet && fnMet){ opt = o; break; }
+  }
+  if(!opt) return null;
+  let chosen;
+  if(opt.p!==undefined){ const p=(typeof opt.p==='function')?opt.p(S):opt.p; chosen = chance(p)?opt.ok:opt.ko; }
+  else chosen = opt.ok;
+  if(!chosen) return null;
+  const deltas = applyEff(chosen.eff, isMain ? {rid:item.rid} : null);
+  return { t: ev.t, txt: chosen.txt || ev.t, deltas: deltas };
+}
+function snapStageFlags(){
+  const out = {};
+  ['家族破败','九死一生','仙缘','顿悟','野心','七下西洋'].forEach(function(k){ out[k] = !!S.flags[k]; });
+  return out;
+}
+function stageFlagsDiff(before){
+  const out = {};
+  for(const k in before){ if(!!S.flags[k] !== before[k]) out[k] = true; }
+  return out;
+}
+/* v1.8 · 窗口结算主函数：内部逐年跑 doSettle×N + pickEvents×N，收集事件队列；
+   步中死亡强制停（唯一中途停点）；窗口末黑市判定 1 次（33%，命中置 S.blackMarketChance=1，不打断）。 */
+function advanceByStage(){
+  const N = stageN(S.age);
+  const q = { years:0, notes:[], dailies:[], specials:[], mains:[], death:null, flags:{}, blackMarket:false };
+  const before = snapStageFlags();
+  const h0 = S.health, m0 = S.money;
+  for(let i=0;i<N;i++){
+    const notes = doSettle();
+    q.notes = q.notes.concat(notes);
+    q.years++;
+    if(S.pendingEnd){ q.death = S.pendingEnd; break; }
+    const evs = pickEvents();
+    for(const it of evs){
+      if(evSig(it)==='stop'){
+        q.specials.push(it);
+        if(it.kind==='main') q.mains.push(it);
+      }else{
+        const r = resolveEventDefault(it);
+        if(r){ r.age = S.age; q.dailies.push(r); }   /* age：事件发生年（toast 展示） */
+      }
+    }
+  }
+  q.hd = S.health - h0; q.md = S.money - m0;
+  q.flags = stageFlagsDiff(before);
+  if(chance(.33)){ S.blackMarketChance = 1; q.blackMarket = true; }
+  return q;
+}
+
 /* ───────── 阶段 ④：更　新 ───────── */
 function doUpdate(){
   S.actionDone = false;
@@ -738,15 +859,53 @@ function judgeNaturalDeath(byHealth){
   if(META.gens>=3 && a.望>=6 && S.children.length>0) return 'jiamen';
   if(!S.children.length && !S.flags.修仙入门 && S.age>=45) return 'duanzi';
 
-  /* ⑥ 兜底：寿终正寝 */
+  /* ⑥ v1.8 修复：身份感知型善终——高官/名将/国手/巨贾等不应死于「布衣」（pingdan 文案自带阶层暗示）。
+     仅无特殊死法、非凶终、非修仙的兜底路径走到此处；直接复用对应善终结局（含历史原型）。 */
+  if(S.identity && typeof ENDINGS!=='undefined'){
+    const map = {
+      chujiangrux:'chujiang',   /* 出将入相 */
+      mingchen:   'mingchen',    /* 名臣 */
+      mingjiang:  'mingjiang',   /* 名将 */
+      guoshou:    'xinglin',     /* 国手 */
+      taiyiling:  'taiyi',       /* 太医令 */
+      yaowang:    'yaowang',     /* 药王 */
+      hongding:   'hongding',    /* 红顶商人 */
+      juaj:       'fujia',       /* 巨贾 */
+      jiaozong:   'jiaozong',    /* 教宗 */
+      huguo:      'huguo',       /* 护国 */
+      zhenren:    'zhenren',     /* 真人 */
+      diwang:     'xiongzhu',    /* 帝王（非凶终时） */
+      weimian:    'guangwu'      /* 位面之子（刘秀） */
+    };
+    const mapped = map[S.identity];
+    if(mapped && ENDINGS[mapped]) return mapped;
+  }
+
+  /* ⑦ 兜底：寿终正寝 */
   return 'pingdan';
 }
 
 /* ───────── 终局收束（规格 §2.6-4）：成就 × 死法 双轨 ─────────
    primary 为落图鉴与计分的主键：死法属凶终（bad／cut）时以死法为准，
    否则成就铭文优先（善终者以其一生所立之身份论定）。 */
+/* v1.8 结局闭环·修复1：仅"身败名裂 / 被定罪 / 被诛"类死法才抹成就；
+   战死（马革裹尸/首战阵亡/兵败被俘/军法斩）、因公（大疫染病/庸医误人/医死贵人）、
+   修行陨落（走火入魔/渡劫失道/心魔反噬/秘境陨落/兵解化道）一律保留成就。
+   ⚠ 注意：b14 功高毒杀（韩信式，亦属"以军旅终"）按军功类逻辑同样保留，不在此集合。 */
+const ENDING_ERASE_ACH = new Set([
+  'baozheng','jianning','tusi','longduan','zhongdao','eguan','xingchang',
+  'b19','b20','b20b','b04x','b04','b03','b07','b02','b21','b21b',
+  'b23','b22','b24','danbi','miefa','b05','b06','b01'
+]);
+
 function resolveOutcome(){
   let death = (S && S.pendingEnd && ENDINGS[S.pendingEnd]) ? S.pendingEnd : 'pingdan';
+  /* v1.8 结局闭环·修复2：帝王/位面之子 的夺权坏结局重映射——避免"帝王却显示谋反/起事"矛盾文案。
+     仅作用于 pendingEnd 直写的夺权坏结局；自然善终（judgeNaturalDeath ⑥ 已映射 xiongzhu/guangwu）不受此影响。 */
+  if(S && (S.identity==='diwang'||S.identity==='weimian')){
+    if(death==='b19' || death==='b20b') death = 'longYu';   /* 起事枭首 / 夺嫡幽死 → 龙驭宾天 */
+    else if(death==='b20')             death = 'qinZheng';  /* 谋反事泄 → 御驾亲征殒阵（如用户截图场景） */
+  }
   /* v1.7 主文档 B-4 / D-4：弃帝修仙 / 弃名修仙 的虚拟修仙落点（优先级高于普通飞升与帝王铭文）。
      金蝉子由取经链末节点 end 直结，此处为保险兜底（如后续年份自然寿终前仍持双旗标）。 */
   if(S && S.flags.弃帝修仙 && S.xianTier>=2 && ENDINGS['xianyingzheng']) death = 'xianyingzheng';
@@ -759,15 +918,17 @@ function resolveOutcome(){
   }
   const ach   = achievementEnding();
   const dk    = ENDINGS[death] ? ENDINGS[death].k : 'good';
-  /* 凶终（bad）抹去成就铭文——被弑者无「守成」之名；
-     血脉断绝（cut）只关乎传承，不抵消一生所立，故仍保留成就。 */
   const fatal = (dk==='bad');
+  /* v1.8 结局闭环·修复1：仅身败类（ENDING_ERASE_ACH）抹成就；honorable 凶终保留成就。 */
+  const eraseAch = fatal && ENDING_ERASE_ACH.has(death);
+  const aOut = eraseAch ? null : ach;
   /* v1.7：虚拟修仙结局（ascend·史无其人）为主键落点——不因已立身份（教宗/真人）被覆盖，进图鉴异闻分区 */
   const virtual = (death==='xianyingzheng' || death==='jinchanzi');
   /* v1.7 C线：郑和远航为主键（玩家以远航善终论定，不因从政名臣身份被覆盖） */
   const forced  = (death==='zhenghe');
-  const primary = (ach && !fatal && !virtual && !forced && ach!==death) ? ach : death;
-  return { death:death, ach: fatal ? null : ach, primary:primary,
+  /* v1.8 结局闭环·修复3：主键以成就为主（honorable 凶终仍取成就）；仅被抹（身败类）或成就与死法同名时回退死法。 */
+  const primary = (ach && !eraseAch && !virtual && !forced && ach!==death) ? ach : death;
+  return { death:death, ach: aOut, primary:primary, eraseAch:eraseAch,
            identity: S ? S.identity : null, years: S ? S.reignYears : 0 };
 }
 /* 成就卷录入（图鉴双维之一）：以身份为键，记次数／最高分／最长居位／最高寿 */
@@ -775,6 +936,8 @@ function recordIdentity(score){
   if(!S || !S.identity || typeof IDENTITIES==='undefined' || !IDENTITIES[S.identity]) return null;
   const id = S.identity;
   const sc = (typeof score==='number') ? score : 0;
+  /* v1.8 修复：列传门槛分——人生评分 < 550（下品底线）不录入青史列传，避免「一生平庸却强行上榜」 */
+  if(sc < 550) return null;
   const v  = (id==='diwang') ? diwangVariant() : null;   /* 帝王五途：依得国之路取动态原型 */
   const prev = META.dexId[id];
   if(prev){

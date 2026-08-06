@@ -576,6 +576,17 @@ button{ font:inherit; color:inherit; cursor:pointer; min-height:var(--hit-min); 
 .modal__foot{ display:flex; justify-content:flex-end; gap:var(--sp-3); margin-top:var(--sp-5); }
 .modal__notice{ font-size:var(--fs-sm); color:var(--st-danger); margin-top:var(--sp-3); }
 
+/* v1.8 增补 · 窗口综合弹窗（根治「行动按钮只有第一下能点」bug：单弹窗多决策区，无递归链） */
+.modal--batch .modal__title{ font-size:var(--fs-h3, 1.25rem); }
+.batch-list{ max-height:54vh; overflow:auto; margin:var(--sp-4) calc(-1 * var(--sp-4)) 0; padding:0 var(--sp-4); }
+.batch-block{ border-top:1px solid var(--ink-line-soft); padding:var(--sp-5) 0; }
+.batch-block:first-child{ border-top:none; padding-top:var(--sp-3); }
+.batch-block--main{ background:linear-gradient(rgba(166,121,31,.07), rgba(0,0,0,0)); border-radius:var(--radius); }
+.batch-block__hd{ display:flex; align-items:center; gap:var(--sp-3); margin-bottom:var(--sp-2); }
+.batch-block__hd h3{ font-family:var(--font-kai); font-size:var(--fs-h3, 1.1rem); font-weight:700; margin:0; }
+.batch-block__lead{ font-size:var(--fs-sm); line-height:1.6; color:var(--ink-700); text-indent:2em; margin:0 0 var(--sp-3); }
+.opt--chosen{ outline:2px solid var(--gold); outline-offset:-2px; background:var(--gold-wash, var(--paper)); }
+
 .modal--confirm{ width:440px; padding:26px 28px; border-top:3px solid var(--st-danger-solid);
   box-shadow:var(--el-overlay), var(--el-double); }
 .confirm__hd{ display:flex; gap:var(--sp-3); align-items:flex-start; }
@@ -809,7 +820,7 @@ button{ font:inherit; color:inherit; cursor:pointer; min-height:var(--hit-min); 
   border-radius:var(--radius); box-shadow:var(--el-float), var(--el-double); animation:ink-spread var(--dur-3) var(--ease-ink) both; }
 .qs-modal__hd{ display:flex; align-items:center; justify-content:space-between; padding:var(--sp-4) var(--sp-6); border-bottom:1px solid var(--ink-line); }
 .qs-modal__body{ overflow:auto; padding:var(--sp-5) var(--sp-6) var(--sp-6); }
-.qs-scrolls{ display:grid; grid-template-columns:1fr 1fr; gap:var(--sp-6); }
+.qs-scrolls{ display:grid; grid-template-columns:minmax(280px,0.35fr) 1fr; gap:var(--sp-6); align-items:start; }  /* v1.8 修复：列传 35% / 殁录 65% */
 .qs-vol__hd{ display:flex; align-items:baseline; gap:var(--sp-3); margin-bottom:var(--sp-3); }
 .qs-vol__hd .meta{ font-weight:400; letter-spacing:0; color:var(--ink-500); }
 @media (max-width:680px){ .qs-scrolls{ grid-template-columns:1fr; } }
@@ -872,5 +883,10 @@ button{ font:inherit; color:inherit; cursor:pointer; min-height:var(--hit-min); 
 .chip--bag{ cursor:pointer; border:1px dashed var(--ink-300); }
 .chip--bag:hover{ border-color:var(--cinnabar); color:var(--cinnabar); }
 .bag-list{ margin-top:var(--sp-1); }
+/* v1.8 · 行事页「黑市 ×1」按钮（窗口判定命中置位出现） */
+.bm-slot{ margin-top:var(--sp-3); }
+.btn--bm{ width:100%; border:1px dashed var(--cinnabar); color:var(--cinnabar);
+  font-weight:700; letter-spacing:.2em; }
+.btn--bm:hover{ background:var(--cinnabar); color:var(--paper); }
 .legacy-dex{ display:flex; justify-content:space-between; align-items:center; gap:var(--sp-3); margin-top:var(--sp-4); padding-top:var(--sp-3); border-top:1px solid var(--ink-line-soft); }
-#btn-fast{ margin-right:var(--sp-2); }
+
