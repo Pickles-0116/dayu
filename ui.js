@@ -226,9 +226,11 @@ function renderBatchEventModal(queue, onDone){
       }
     }
     const isMain = item.kind==='main';
+    const typeLabel = (ev.type || '通用');
+    const mainSuffix = isMain && typeLabel !== '主线' ? ' · 主线' : '';
     const block = el('div','batch-block'+(isMain?' batch-block--main':''));
     block.innerHTML =
-      '<div class="batch-block__hd"><span class="badge ev-'+(ev.type||'通用')+'">'+(ev.type||'通用')+(isMain?' · 主线':'')+'</span><h3>'+esc(ev.t)+'</h3></div>'
+      '<div class="batch-block__hd"><span class="badge ev-'+(ev.type||'通用')+'">'+typeLabel+mainSuffix+'</span><h3>'+esc(ev.t)+'</h3></div>'
       + '<p class="batch-block__lead">'+esc(ev.d)+'</p>'
       + '<div class="opts" data-block="'+qi+'"></div>';
     const optsBox = block.querySelector('.opts');

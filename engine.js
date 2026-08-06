@@ -179,7 +179,7 @@ function runBeggarGauntlet(origin){
   }
   S.age = alive ? 15 : dieAge;
   rows.forEach(function(r){ pushLog(r.age, r.txt, r.live?'':'bad'); });
-  S.gauntlet = { rows: rows, alive: alive, target: target };
+  S.gauntlet = { rows: rows, alive: alive, target: target, dieAge: dieAge };
   if(alive){
     S.flags.乞儿存活 = true;
     pushLog(15, '活过了十五岁。同庙的七个孩子，只剩你一个。', 'key');
@@ -792,6 +792,7 @@ function advanceByStage(){
   const q = { years:0, notes:[], dailies:[], specials:[], mains:[], death:null, flags:{}, blackMarket:false };
   const before = snapStageFlags();
   const h0 = S.health, m0 = S.money;
+  const dispatchedMains = new Set();               /* v1.8 修复：同窗口内同路线主线只触发一次，避免时间步进压缩导致同一节点重复弹窗 */
   for(let i=0;i<N;i++){
     const notes = doSettle();
     q.notes = q.notes.concat(notes);
@@ -800,8 +801,9 @@ function advanceByStage(){
     const evs = pickEvents();
     for(const it of evs){
       if(evSig(it)==='stop'){
+        if(it.kind==='main' && dispatchedMains.has(it.rid)) continue; /* 已在本窗口派发同路线主线，跳过 */
         q.specials.push(it);
-        if(it.kind==='main') q.mains.push(it);
+        if(it.kind==='main'){ dispatchedMains.add(it.rid); q.mains.push(it); }
       }else{
         const r = resolveEventDefault(it);
         if(r){ r.age = S.age; q.dailies.push(r); }   /* age：事件发生年（toast 展示） */
