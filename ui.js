@@ -6,6 +6,7 @@
 function el(tag, cls){ const e=document.createElement(tag); if(cls) e.className=cls; return e; }
 function badge(text, cls){ return '<span class="badge '+(cls||'')+'">'+esc(text)+'</span>'; }
 function optLetter(i){ return '甲乙丙丁戊己庚辛壬癸'[i] || (i+1); }
+function parseQty(el){ return Math.max(0, parseInt((el.value||'').replace(/\D/g,''),10)||0); }
 
 /* ───────── DOM 速查 ───────── */
 const $ = function(id){ return document.getElementById(id); };
@@ -279,6 +280,7 @@ function renderBatchEventModal(queue, onDone){
   openModal(modal, { focusSel:'#batch-done', onEsc:null });
 }
 function enterActionPhase(){
+  doUpdate();   /* v1.8 P1 · #11 修复：回到主界面即刷新玩法行动点（随窗口长度缩放） */
   S.phase = 'action'; S.actionDone = false;
   setRtTab('act');   /* v1.7.1:每岁进入行动阶段自动切「行事」 */
   render();
@@ -392,8 +394,10 @@ function showConfirmBox(c, onYes){
 
 /* ═══════════════ v1.7 增补二 · 黑市商人弹层（3 件 · 刷新 1 次 · 买 2 次） ═══════════════ */
 /* 黑市购买核心（纯逻辑，UI 事件委托只负责触发；探针可直测）：
-   每件商品库存 1（bought 标记，同一商品最多买 1 次）；全局最多买 2 件（从不同商品中挑）。 */
-function shopBuy(shop, i){
+   每件商品库存 1（bought 标记，同一商品最多买 1 次）；全局最多买 2 件（从不同商品中挑）。
+   命名 blackMarketBuy：避免与 engine.js 商铺版 shopBuy(cat,amt) 同名覆盖（2026-08-07 修复——
+   此前 ui.js 后加载覆盖 engine，导致商铺「确认进货」误入黑市签名抛 TypeError）。 */
+function blackMarketBuy(shop, i){
   const g = shop.goods[i];
   if(!g || g.bought || S.money < g.price || shop.buy<=0) return { ok:false };
   S.money = clampMoney(S, S.money - g.price);
@@ -438,7 +442,7 @@ function showShop(shop, onClose){
     const btn = (t && t.closest) ? t.closest('[data-buy]') : null;
     if(!btn || btn.disabled) return;
     const i = parseInt(btn.getAttribute('data-buy'),10);
-    const r = shopBuy(shop, i);
+    const r = blackMarketBuy(shop, i);
     if(!r.ok) return;
     const g = shop.goods[i];
     pushLog(S.age, '黑市购得「'+g.n+'」。', '');
@@ -501,7 +505,7 @@ function render(){
   dom.hudAge.classList.remove('is-tick'); void dom.hudAge.offsetWidth; dom.hudAge.classList.add('is-tick');
   renderBadges(); renderAttr(); renderAxis(); renderHealth(); renderCult(); renderMoney();
   renderTags(); renderRoutes(); renderNarr(); renderLog();
-  renderFate(); renderActions(); renderBag(); renderRouteFoot(); renderBlackMarket();
+  renderFate(); renderActions(); renderBag(); renderRouteFoot(); renderBlackMarket(); renderPlayScreens();
   dom.btnNext.disabled = !(S.phase==='idle' && !S.ended);
   /* v1.8 · 「度过此 N 年」按钮文案随阶段步长变化 */
   if(dom.btnNext && typeof stageN==='function'){
@@ -571,6 +575,12 @@ function renderHealth(){
   dom.healthNote.textContent = S.health<=0?'命悬一线':(pct<25?'羸弱':(pct>75?'康健':'寻常'));
 }
 function renderMoney(){
+  /* v1.8 帝王线重设计 · 称帝后主指标为国库/领土/兵力：银行变国库行 */
+  if(S.identity==='diwang' || S.identity==='weimian'){
+    dom.moneyNum.innerHTML = '<span style="color:var(--st-gain)">'+L(S.treasury||0)+'</span><span style="font-size:.7em;color:var(--ink-300)"> 银 · 国库</span>';
+    dom.moneyNote.textContent = '领土 '+L(S.territory||0)+' 州 · 兵力 '+L(S.troops||0);
+    return;
+  }
   dom.moneyNum.innerHTML = '<span style="color:'+(S.money<0?'var(--st-danger)':'inherit')+'">'+L(S.money)+'</span><span style="font-size:.7em;color:var(--ink-300)"> 银</span>';
   dom.moneyNote.textContent = S.debt ? (S.money<0?'债台高筑':'勉力还债')
     : S.flags.mundane ? '坐吃山空'
@@ -730,6 +740,17 @@ function renderRoutes(){
     btn.addEventListener('click', function(){
       const rid = btn.dataset.rid;
       const r = ROUTES.find(function(x){ return x.id===rid; });
+      /* 无圣旨：第 2 条明线硬阻（deny）——不激活、不毁旧线，仅提示 */
+      if(comboCheck(rid)==='deny'){
+        showConfirmBox({
+          title:'需奉旨方可兼修',
+          expect:'你尚未持有「圣旨」，一生只能择一明线而行。',
+          rate:'不可为',
+          cost:'先去黑市寻得圣旨，方能接取其他线路。',
+          left:null, warn:'此路暂不通。'
+        }, function(){});   // 空回调：仅提示，不激活
+        return;
+      }
       /* 转途不可逆：旧明线离线且节点归零，先请示再落子（入线日志由 activateRoute 统一打） */
       if(comboCheck(rid)==='switch'){
         const olds = switchVictimNames(rid).join('、');
@@ -880,6 +901,873 @@ function renderRouteFoot(){
   dom.routeFoot.innerHTML = active.length
     ? ('已入：'+active.map(function(id){ const r=ROUTES.find(function(x){return x.id===id;}); return r?r.n:''; }).join('、'))
     : '尚无既定之途 · 静待时机';
+}
+
+/* v1.8 PRD · 通用玩法界面（openPlayScreen）
+   cfg = { badge, title, lead, status:()=>html,
+           sections:[ {title, render:(ctx)=>({html, wire:(body)=>{}}) } ], onClose }
+   ctx.refresh() 重渲状态条 + 所有分区（每次操作后可调用）。 */
+function openPlayScreen(cfg){
+  const modal = el('div','modal modal--play');
+  modal.innerHTML =
+    '<div class="modal__type"><span class="badge badge--gilt">'+esc(cfg.badge||'玩法')+'</span></div>'
+    + '<h2 class="modal__title">'+esc(cfg.title||'玩法界面')+'</h2>'
+    + (cfg.lead ? '<p class="modal__lead">'+esc(cfg.lead)+'</p>' : '')
+    + '<div class="play-status meta" id="play-status"></div>'
+    + '<div class="play-sections" id="play-sections"></div>'
+    + '<div class="modal__foot"><button class="btn btn--primary" id="play-close" type="button">返回行事</button></div>';
+  openModal(modal, { focusSel:'#play-close', onEsc:function(){ closeModal(); if(cfg.onClose) cfg.onClose(); } });
+  const statusEl = dom.modalRoot.querySelector('#play-status');
+  const secEl = dom.modalRoot.querySelector('#play-sections');
+  const ctx = { refresh:function(){
+    statusEl.innerHTML = cfg.status();
+    secEl.innerHTML = cfg.sections.map(function(s,i){
+      return '<section class="play-sec"><h3 class="play-sec__hd">'+esc(s.title)+'</h3><div class="play-sec__body" data-sec="'+i+'"></div></section>';
+    }).join('');
+    cfg.sections.forEach(function(s,i){
+      const body = secEl.querySelector('[data-sec="'+i+'"]');
+      const r = s.render(ctx);
+      body.innerHTML = r.html;
+      if(r.wire) r.wire(body);
+    });
+  } };
+  ctx.refresh();
+  dom.modalRoot.querySelector('#play-close').addEventListener('click', function(){ closeModal(); if(cfg.onClose) cfg.onClose(); });
+}
+/* v1.8 P1 · #11：玩法行动点 chip（随窗口长度缩放，见 engine.doUpdate） */
+function playBudgetChip(){
+  return S.playBudget>0
+    ? ' · <span class="badge">本窗口余 <b>'+S.playBudget+'</b> 次玩法</span>'
+    : ' · <span class="badge">本窗口玩法已尽</span>';
+}
+
+/* ══ 商贾 · 商铺界面（PRD §4，自主定量） ══ */
+function openShopScreen(){ openPlayScreen(shopScreenCfg()); }
+function shopStockValue(){
+  let v = 0;
+  MARKET_KEYS.forEach(function(k){ const s = S.stock[k]; if(s && s.qty>0) v += marketPrice(k)*s.qty*holdCoef(k); });
+  return Math.round(v);
+}
+function shopScreenCfg(){
+  return {
+    badge:'商铺', title:'商贾 · 商铺', lead:'盘货、置产、垄断，皆由你定。',
+    status:function(){
+      return '囊中 <b class="lat">'+L(S.money)+'</b> 银 · 囤货估值 <b class="lat">'+L(shopStockValue())+'</b> 银 · 地产 <b class="lat">'+L(S.estates)+'</b> 两'
+        + (S.flags.垄断 ? ' · <span class="badge">已立垄断</span>' : '');
+    },
+    sections:[ secBuy(), secSell(), secInventory(), secEstate(), secMonopoly() ],
+    onClose:function(){ render(); }
+  };
+}
+/* 进货：选品类 + 投入银两（步长 50）→ 按市价购入整单位 */
+function secBuy(){
+  return { title:'进货（买货 · 自主定量）', render:function(ctx){
+    const cats = MARKET_KEYS.map(function(k){ return {k:k, n:MARKET_CATS[k].n, price:marketPrice(k)}; });
+    const html =
+      '<div class="qty-row"><span class="qty-label">品类</span><div class="chips" id="buy-cats">'
+      + cats.map(function(c,i){ return '<button class="chip'+(i===0?' chip--on':'')+'" data-cat="'+c.k+'" type="button">'+esc(c.n)+' <i class="lat">'+L(c.price)+'银/单位</i></button>'; }).join('')
+      + '</div></div>'
+      + '<div class="qty-row"><span class="qty-label">投入</span>'
+      + '<button class="btn btn--sm qty-dec" type="button">−</button>'
+      + '<input class="qty-input" id="buy-qty" type="text" inputmode="numeric" pattern="\\d*" value="0" />'
+      + '<button class="btn btn--sm qty-inc" type="button">＋</button>'
+      + '<button class="btn btn--sm" id="buy-max" type="button">拉满</button></div>'
+      + '<div class="qty-preview" id="buy-prev"></div>'
+      + '<button class="btn btn--primary" id="buy-go" type="button">确认进货</button>';
+    return { html:html, wire:function(body){
+      let cat = MARKET_KEYS[0];
+      const qty = body.querySelector('#buy-qty');
+      const prev = body.querySelector('#buy-prev');
+      const refresh = function(){
+        const amt = Math.max(0, parseQty(qty));
+        const price = marketPrice(cat);
+        const units = Math.floor(amt / price);
+        const ok = amt>0 && amt<=S.money && units>0;
+        prev.innerHTML = '市价 <b class="lat">'+L(price)+'</b> 银/单位 → 可购 <b class="lat">'+L(units)+'</b> 单位（耗 '+L(units*price)+' 银）'
+          + (amt>S.money?'<span class="qty-warn"> · 银钱不足，上限 '+L(S.money)+'</span>':'');
+        const go = body.querySelector('#buy-go'); if(go) go.disabled = !ok;
+      };
+      body.querySelectorAll('#buy-cats .chip').forEach(function(b){ b.addEventListener('click', function(){
+        body.querySelectorAll('#buy-cats .chip').forEach(function(x){ x.classList.remove('chip--on'); });
+        b.classList.add('chip--on'); cat = b.getAttribute('data-cat'); refresh();
+      }); });
+      body.querySelector('.qty-dec').addEventListener('click', function(){ qty.value = Math.max(0,(parseQty(qty))-50); refresh(); });
+      body.querySelector('.qty-inc').addEventListener('click', function(){ qty.value = (parseQty(qty))+50; refresh(); });
+      body.querySelector('#buy-max').addEventListener('click', function(){ const p=marketPrice(cat); qty.value = Math.floor(S.money/p)*p; refresh(); });
+      qty.addEventListener('input', refresh);
+      body.querySelector('#buy-go').addEventListener('click', function(){
+        const r = shopBuy(cat, parseQty(qty));
+        if(!r.ok){ toast('进货失败', r.reason||'数量无效', 'danger'); return; }
+        pushLog(S.age, '商铺进货：'+MARKET_CATS[cat].n+' '+r.units+' 单位（耗 '+r.amt+' 银）。', '');
+        toast('进货 · '+MARKET_CATS[cat].n, '购入 '+r.units+' 单位', 'gain');
+        render(); ctx.refresh();
+      });
+      refresh();
+    }};
+  }};
+}
+/* 出货：选持有品类 + 数量（上限=持有量）→ 实时显示预计收入/亏损 */
+function secSell(){
+  return { title:'出货（卖货 · 自主定量）', render:function(ctx){
+    const held = MARKET_KEYS.filter(function(k){ return S.stock[k] && S.stock[k].qty>0; });
+    if(held.length===0) return { html:'<p class="play-empty">仓中无货可卖。</p>' };
+    const html =
+      '<div class="qty-row"><span class="qty-label">品类</span><div class="chips" id="sell-cats">'
+      + held.map(function(k,i){ return '<button class="chip'+(i===0?' chip--on':'')+'" data-cat="'+k+'" type="button">'+esc(MARKET_CATS[k].n)+' <i class="lat">'+L(S.stock[k].qty)+'单位</i></button>'; }).join('')
+      + '</div></div>'
+      + '<div class="qty-row"><span class="qty-label">数量</span>'
+      + '<button class="btn btn--sm qty-dec" type="button">−</button>'
+      + '<input class="qty-input" id="sell-qty" type="text" inputmode="numeric" pattern="\\d*" value="0" />'
+      + '<button class="btn btn--sm qty-inc" type="button">＋</button>'
+      + '<button class="btn btn--sm" id="sell-max" type="button">全抛</button></div>'
+      + '<div class="qty-preview" id="sell-prev"></div>'
+      + '<button class="btn btn--primary" id="sell-go" type="button">确认出货</button>';
+    return { html:html, wire:function(body){
+      let cat = held[0];
+      const qty = body.querySelector('#sell-qty');
+      const prev = body.querySelector('#sell-prev');
+      const refresh = function(){
+        const n = Math.max(0, parseQty(qty));
+        const max = S.stock[cat].qty;
+        const price = marketPrice(cat), coef = holdCoef(cat);
+        const income = Math.round(price * n * coef);
+        const avg = max>0 ? S.stock[cat].cost/max : 0;
+        const profit = income - Math.round(avg * n);
+        const ok = n>0 && n<=max;
+        prev.innerHTML = '市价 <b class="lat">'+L(price)+'</b> × '+L(n)+' 单位 × 持有系数 <b class="lat">'+coef.toFixed(2)+'</b> → 预计 <b class="lat">'+L(income)+'</b> 银'
+          + (profit<0 ? '<span class="qty-warn"> · 预计亏损 '+L(-profit)+' 银</span>' : ' · 获利 '+L(profit)+' 银');
+        const go = body.querySelector('#sell-go'); if(go) go.disabled = !ok;
+      };
+      body.querySelectorAll('#sell-cats .chip').forEach(function(b){ b.addEventListener('click', function(){
+        body.querySelectorAll('#sell-cats .chip').forEach(function(x){ x.classList.remove('chip--on'); });
+        b.classList.add('chip--on'); cat = b.getAttribute('data-cat'); qty.value=0; refresh();
+      }); });
+      body.querySelector('.qty-dec').addEventListener('click', function(){ qty.value = Math.max(0,(parseQty(qty))-1); refresh(); });
+      body.querySelector('.qty-inc').addEventListener('click', function(){ qty.value = (parseQty(qty))+1; refresh(); });
+      body.querySelector('#sell-max').addEventListener('click', function(){ qty.value = S.stock[cat].qty; refresh(); });
+      qty.addEventListener('input', refresh);
+      body.querySelector('#sell-go').addEventListener('click', function(){
+        const r = shopSell(cat, parseQty(qty));
+        if(!r.ok){ toast('出货失败', r.reason||'数量无效', 'danger'); return; }
+        pushLog(S.age, '商铺出货：'+MARKET_CATS[cat].n+' 单位（得 '+r.income+' 银）。', '');
+        toast('出货 · '+MARKET_CATS[cat].n, '得 '+r.income+' 银', 'gain');
+        render(); ctx.refresh();
+      });
+      refresh();
+    }};
+  }};
+}
+/* 库存：只读 + 全部抛售 */
+function secInventory(){
+  return { title:'库存（只读 + 管理）', render:function(ctx){
+    const held = MARKET_KEYS.filter(function(k){ return S.stock[k] && S.stock[k].qty>0; });
+    if(held.length===0) return { html:'<p class="play-empty">仓中无货。</p>' };
+    const html = held.map(function(k){
+      const s = S.stock[k]; const price = marketPrice(k), coef = holdCoef(k);
+      const val = Math.round(price * s.qty * coef);
+      return '<div class="inv-row"><span class="inv-name">'+esc(MARKET_CATS[k].n)+'</span>'
+        + '<span class="inv-num">持有 '+L(s.qty)+' · 成本 '+L(s.cost)+' · 持 '+L(S.stockHold[k]||0)+'年</span>'
+        + '<span class="inv-val">估值 '+L(val)+' 银</span></div>';
+    }).join('')
+    + '<button class="btn" id="inv-dump" type="button">全部抛售</button>';
+    return { html:html, wire:function(body){
+      const dump = body.querySelector('#inv-dump');
+      if(dump) dump.addEventListener('click', function(){
+        let got=0;
+        MARKET_KEYS.forEach(function(k){ const s=S.stock[k]; if(s && s.qty>0){ const r=shopSell(k, s.qty); if(r.ok) got+=r.income; } });
+        if(got>0){ pushLog(S.age,'商铺清仓，得 '+got+' 银。',''); toast('清仓','得 '+got+' 银','gain'); }
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+/* 地产：购置 / 变卖，实时显示查封率 */
+function secEstate(){
+  return { title:'地产（买地卖地 · 自主定量）', render:function(ctx){
+    const seize = monopolySeizeRate();
+    const html =
+      '<div class="qty-row"><span class="qty-label">购置</span>'
+      + '<button class="btn btn--sm qty-dec" type="button">−</button>'
+      + '<input class="qty-input" id="est-buy" type="text" inputmode="numeric" pattern="\\d*" value="0" />'
+      + '<button class="btn btn--sm qty-inc" type="button">＋</button>'
+      + '<button class="btn btn--sm" id="est-max" type="button">拉满</button></div>'
+      + '<div class="qty-preview" id="est-prev"></div>'
+      + '<button class="btn btn--primary" id="est-go" type="button">购置地产</button>'
+      + '<button class="btn" id="est-sell" type="button">变卖地产（八折回血）</button>';
+    return { html:html, wire:function(body){
+      const qty = body.querySelector('#est-buy'); const prev = body.querySelector('#est-prev');
+      const refresh = function(){
+        const amt = Math.max(0, parseQty(qty));
+        const ok = amt>0 && amt<=S.money;
+        prev.innerHTML = '当前地产 <b class="lat">'+L(S.estates)+'</b> 两 · 每年岁入约 <b class="lat">'+L(Math.floor(S.estates*0.08))+'</b> 银 · 当年查封率 <b class="lat">'+Math.round(seize*100)+'%</b>'
+          + (amt>S.money?'<span class="qty-warn"> · 银钱不足</span>':'');
+        const go = body.querySelector('#est-go'); if(go) go.disabled = !ok;
+      };
+      body.querySelector('.qty-dec').addEventListener('click', function(){ qty.value=Math.max(0,(parseQty(qty))-50); refresh(); });
+      body.querySelector('.qty-inc').addEventListener('click', function(){ qty.value=(parseQty(qty))+50; refresh(); });
+      body.querySelector('#est-max').addEventListener('click', function(){ qty.value=S.money; refresh(); });
+      qty.addEventListener('input', refresh);
+      body.querySelector('#est-go').addEventListener('click', function(){
+        const r = shopEstateBuy(parseQty(qty));
+        if(!r.ok){ toast('购置失败', r.reason||'金额无效', 'danger'); return; }
+        pushLog(S.age,'置办地产，耗 '+r.amt+' 银。',''); toast('地产','+'+r.amt+' 两','gain');
+        render(); ctx.refresh();
+      });
+      body.querySelector('#est-sell').addEventListener('click', function(){
+        const r = shopEstateSell();
+        if(!r.ok){ toast('变卖失败', r.reason||'无地产', 'danger'); return; }
+        pushLog(S.age,'变卖地产，回 '+r.back+' 银。',''); toast('变卖地产','+'+r.back+' 银','gain');
+        render(); ctx.refresh();
+      });
+      refresh();
+    }};
+  }};
+}
+/* 垄断：打点立垄断（一次性解锁，年利在 doSettle 结算） */
+function secMonopoly(){
+  return { title:'垄断物料（打点 · 自主定量）', render:function(ctx){
+    if(S.flags.垄断) return { html:'<p class="play-empty">已立垄断，每年坐收货利（被查率约 30%，事发则损道德）。</p>' };
+    const W = Math.max(20, S.attrs.脉*15 + S.attrs.财*10);
+    const html =
+      '<p class="play-note">打点官府、把持货路，可立垄断，每年稳收货利；事发则声名受损。</p>'
+      + '<div class="qty-row"><span class="qty-label">打点</span>'
+      + '<button class="btn btn--sm qty-dec" type="button">−</button>'
+      + '<input class="qty-input" id="mon-amt" type="text" inputmode="numeric" pattern="\\d*" value="50" />'
+      + '<button class="btn btn--sm qty-inc" type="button">＋</button></div>'
+      + '<div class="qty-preview" id="mon-prev"></div>'
+      + '<button class="btn btn--primary" id="mon-go" type="button">打点立垄断</button>';
+    return { html:html, wire:function(body){
+      const qty = body.querySelector('#mon-amt'); const prev = body.querySelector('#mon-prev');
+      const refresh = function(){
+        const amt = Math.max(0, parseQty(qty));
+        const ok = amt>0 && amt<=S.money;
+        prev.innerHTML = '耗 <b class="lat">'+L(amt)+'</b> 银打点 → 官商关系 ＋1、道德 －1；此后每年约 70% 获货利（约 '+L(W)+'~'+L(Math.floor(W*0.6))+' 银），被查率约 30%'
+          + (amt>S.money?'<span class="qty-warn"> · 银钱不足</span>':'');
+        const go = body.querySelector('#mon-go'); if(go) go.disabled = !ok;
+      };
+      body.querySelector('.qty-dec').addEventListener('click', function(){ qty.value=Math.max(0,(parseQty(qty))-10); refresh(); });
+      body.querySelector('.qty-inc').addEventListener('click', function(){ qty.value=(parseQty(qty))+10; refresh(); });
+      qty.addEventListener('input', refresh);
+      body.querySelector('#mon-go').addEventListener('click', function(){
+        const r = shopMonopoly(parseQty(qty));
+        if(!r.ok){ toast('打点失败', r.reason||'条件不足', 'danger'); return; }
+        pushLog(S.age,'打点立垄断，耗 '+r.amt+' 银。',''); toast('垄断','已立 · 官商关系+1','gain');
+        render(); ctx.refresh();
+      });
+      refresh();
+    }};
+  }};
+}
+/* ══ v1.8 P1 · 六路线玩法界面（军/医/政/宗教；修仙在行动栏不入道场） ══ */
+
+/* ── 军帐 ── */
+function openArmyScreen(){ openPlayScreen(armyScreenCfg()); }
+function armyScreenCfg(){
+  return {
+    badge:'军帐', title:'行军 · 军帐', lead:'募兵、操练、外伐，皆由你定。',
+    status:function(){
+      return '兵力 <b class="lat">'+L(S.troops)+'</b> · 兵权 <b class="lat">'+S.bingquan+'/10</b> · 影响力 <b class="lat">'+S.influence+'/10</b>'
+        + ' · 胜场 <b class="lat">'+S.warWins+'</b> · 银 <b class="lat">'+L(S.money)+'</b>'
+        + playBudgetChip();
+    },
+    sections:[ secRecruit(), secDrill(), secCampaign() ],   /* 经济闭环修复5：删屯兵（募兵劣化版：贵一倍无兵权，假选择砍掉） */
+    onClose:function(){ render(); }
+  };
+}
+function secRecruit(){
+  /* v1.8 用户拍板「最简单」：单一兵种募兵，无兵种选择（原 器械/粮秣 已删） */
+  return { title:'募兵（确定性定量）', render:function(ctx){
+    const price = BARRACK_UNITS.bing.price;
+    const html =
+      '<p class="play-note">招兵买马，耗银得兵，兵权随规模渐固。</p>'
+      + '<div class="qty-row"><span class="qty-label">投入</span>'
+      + '<button class="btn btn--sm qty-dec" type="button">−</button>'
+      + '<input class="qty-input" id="rec-amt" type="text" inputmode="numeric" pattern="\\d*" value="0" />'
+      + '<button class="btn btn--sm qty-inc" type="button">＋</button>'
+      + '<button class="btn btn--sm" id="rec-max" type="button">拉满</button></div>'
+      + '<div class="qty-preview" id="rec-prev"></div>'
+      + '<button class="btn btn--primary" id="rec-go" type="button">确认募兵</button>';
+    return { html:html, wire:function(body){
+      const amt = body.querySelector('#rec-amt'); const prev = body.querySelector('#rec-prev');
+      const refresh = function(){
+        const v = Math.max(0, parseQty(amt));
+        const raw = Math.floor(v/price);
+        const got = Math.min(raw, BARRACK_RECRUIT_CAP);   /* #9 单次成军上限 */
+        const capped = raw > BARRACK_RECRUIT_CAP;
+        const noBq = S.troops >= TROOP_BINGQUAN_CAP;       /* #9 兵力递减：已达军阀规模 */
+        const ok = v>0 && v<=S.money && got>0;
+        prev.innerHTML = '单价 <b class="lat">'+price+'</b> 银/人 → 可募 <b class="lat">'+got+'</b> 人（耗 '+got*price+' 银）'
+          + (capped?'<span class="qty-warn"> · 单次上限 '+BARRACK_RECRUIT_CAP+' 人</span>':'')
+          + (noBq?'<span class="qty-warn"> · 兵已极盛，兵权不再涨</span>':'')
+          + (v>S.money?'<span class="qty-warn"> · 银钱不足</span>':'');
+        const go = body.querySelector('#rec-go'); if(go) go.disabled = !ok;
+      };
+      body.querySelector('.qty-dec').addEventListener('click', function(){ amt.value=Math.max(0,parseQty(amt)-price); refresh(); });
+      body.querySelector('.qty-inc').addEventListener('click', function(){ amt.value=(parseQty(amt))+price; refresh(); });
+      body.querySelector('#rec-max').addEventListener('click', function(){ amt.value=Math.floor(S.money/price)*price; refresh(); });
+      amt.addEventListener('input', refresh);
+      body.querySelector('#rec-go').addEventListener('click', function(){
+        const r = armyRecruit(parseQty(amt), 'bing');
+        if(!r.ok){ toast('募兵失败', r.reason||'无效', 'danger'); return; }
+        pushLog(S.age,'军帐募兵：募兵 '+r.troops+' 人（耗 '+r.amt+' 银）。','');
+        toast('募兵','得 '+r.troops+' 人'+(r.bingquan?' · 兵权+'+r.bingquan:''),'gain');
+        render(); ctx.refresh();
+      });
+      refresh();
+    }};
+  }};
+}
+function secDrill(){
+  return { title:'操练（风险 · 耗兵/健康）', render:function(ctx){
+    const exhausted = S.playBudget<=0;
+    const html = '<p class="play-note">操练提升兵权，但折损兵力与健康。每窗口限 1 次。</p>'
+      + '<div class="qty-preview" id="dr-prev"></div>'
+      + '<button class="btn btn--primary" id="dr-go" type="button"'+(exhausted?' disabled':'')+'>操练士卒</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#dr-prev');
+      prev.innerHTML = '当前兵力 <b class="lat">'+S.troops+'</b> · 兵权 <b class="lat">'+S.bingquan+'/10</b>'
+        + (exhausted?'<span class="qty-warn"> · 本窗口玩法次数已用尽</span>':'');
+      const go = body.querySelector('#dr-go');
+      if(go) go.addEventListener('click', function(){
+        const r = armyDrill();
+        if(!r.ok){ toast('操练失败', r.reason||'无效', 'danger'); return; }
+        pushLog(S.age,'军帐操练，兵权益固。',''); toast('操练','兵权 +1','gain');
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+function secCampaign(){
+  return { title:'外伐（核心风险 · 选战法）', render:function(ctx){
+    const exhausted = S.playBudget<=0;
+    const tactics = CAMPAIGN_TACTICS;
+    const html =
+      '<div class="qty-row"><span class="qty-label">战法</span><div class="chips" id="cam-tac">'
+      + tactics.map(function(t,i){ const dis = t.req && !t.req(S); return '<button class="chip'+(i===0?' chip--on':'')+(dis?' chip--off':'')+'" data-t="'+t.id+'" type="button" '+(dis?'disabled':'')+'>'+esc(t.n)+'</button>'; }).join('')
+      + '</div></div>'
+      + '<p class="play-note" id="cam-hint"></p>'
+      + '<div class="qty-preview" id="cam-prev"></div>'
+      + '<button class="btn btn--primary" id="cam-go" type="button"'+(exhausted?' disabled':'')+'>兴兵外伐</button>';
+    return { html:html, wire:function(body){
+      let tac = tactics[0].id;
+      const prev = body.querySelector('#cam-prev'); const hint = body.querySelector('#cam-hint');
+      const refresh = function(){
+        const t = tactics.filter(function(x){return x.id===tac;})[0];
+        hint.innerHTML = esc(t.hint);
+        /* 经济闭环修复3：敌力随兵力动态缩放（与 engine.armyCampaign 同口径：E=ri(0.5t,1.3t) 钳 60~4000） */
+        const troops = S.troops||0;
+        const Emin = Math.max(60, Math.floor(troops*0.5));
+        const Emax = Math.min(4000, Math.ceil(troops*1.3));
+        const Emid = clamp(Math.round(troops*0.9), 60, 4000);
+        const rate = (troops<Emid*0.6)?0:clamp((troops-Emid*0.4)/(Emid*0.8),0.2,0.9);
+        prev.innerHTML = '敌力约 <b class="lat">'+Emin+'–'+Emax+'</b>（随兵力浮动） · 兵<敌×0.6 必败 · 预计胜率 <b class="lat">'+Math.round(rate*100)+'%</b>'
+          + (troops<20?'<span class="qty-warn"> · 兵力不足（需≥20）</span>':'')
+          + (exhausted?'<span class="qty-warn"> · 本窗口玩法次数已用尽</span>':'');
+      };
+      body.querySelectorAll('#cam-tac .chip').forEach(function(b){ if(b.disabled) return; b.addEventListener('click', function(){
+        body.querySelectorAll('#cam-tac .chip').forEach(function(x){ x.classList.remove('chip--on'); });
+        b.classList.add('chip--on'); tac = b.getAttribute('data-t'); refresh();
+      }); });
+      refresh();
+      const go = body.querySelector('#cam-go');
+      if(go) go.addEventListener('click', function(){
+        const r = armyCampaign(tac);
+        if(!r.ok){ toast('外伐未行', r.reason||'无效', 'danger'); return; }
+        if(r.win){ pushLog(S.age,'外伐克捷，斩获 '+r.gain+' 银，威名远播。',''); toast('外伐·胜','得 '+r.gain+' 银 · 胜场+1','gain'); }
+        else { pushLog(S.age,'外伐失利，折兵 '+r.loss+'。','bad'); toast('外伐·败','折兵 '+r.loss,'danger'); }
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+/* ── 医馆 ── */
+function openClinicScreen(){ openPlayScreen(clinicScreenCfg()); }
+function clinicScreenCfg(){
+  return {
+    badge:'医馆', title:'行医 · 医馆', lead:'坐堂、采药、游历、服丹，皆由你定。',
+    status:function(){
+      return '医术声望 <b class="lat">'+S.rep+'/10</b>'+(S.rep>=8?' <span class="badge">国手</span>':'')
+        + ' · 治人 <b class="lat">'+S.cured+'</b> · 存药 <b class="lat">'+S.meds+'</b> · 银 <b class="lat">'+L(S.money)+'</b>'
+        + playBudgetChip();
+    },
+    sections:[ secTreat(), secGather(), secRoamSell(), secElixir() ],
+    onClose:function(){ render(); }
+  };
+}
+function secTreat(){
+  return { title:'坐堂（主线 · 风险）', render:function(ctx){
+    const exhausted = S.playBudget<=0;
+    const html = '<p class="play-note danger-note">坐堂行医，可积声望与人望；然 <span class="qty-warn">约 8% 治死</span>，损声望与道德。每窗口限 1 次。</p>'
+      + '<div class="qty-preview" id="tr-prev"></div>'
+      + '<button class="btn btn--primary" id="tr-go" type="button"'+(exhausted?' disabled':'')+'>坐堂行医</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#tr-prev');
+      prev.innerHTML = '当前声望 <b class="lat">'+S.rep+'/10</b>'+(S.rep>=8?'（已达国手门槛）':'')+(exhausted?'<span class="qty-warn"> · 本窗口玩法次数已用尽</span>':'');
+      const go = body.querySelector('#tr-go');
+      if(go) go.addEventListener('click', function(){
+        const r = clinicTreat();
+        if(!r.ok){ toast('坐堂失败', r.reason||'无效','danger'); return; }
+        if(r.dead){ pushLog(S.age,'坐堂失误，医死人命，声名受损。','bad'); toast('治死','声望-2 道德-1','danger'); }
+        else { pushLog(S.age,'坐堂行医，活人 '+r.cured+'，声望渐起。',''); toast('坐堂','活人 '+r.cured+' · 声望+1','gain'); }
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+function secGather(){
+  return { title:'采药/炮制（确定性定量）', render:function(ctx){
+    const html = '<div class="qty-row"><span class="qty-label">投入</span>'
+      + '<button class="btn btn--sm qty-dec" type="button">−</button>'
+      + '<input class="qty-input" id="ga-amt" type="text" inputmode="numeric" pattern="\\d*" value="0" />'
+      + '<button class="btn btn--sm qty-inc" type="button">＋</button>'
+      + '<button class="btn btn--sm" id="ga-max" type="button">拉满</button></div>'
+      + '<div class="qty-preview" id="ga-prev"></div>'
+      + '<button class="btn btn--primary" id="ga-go" type="button">采药</button>';
+    return { html:html, wire:function(body){
+      const amt = body.querySelector('#ga-amt'); const prev = body.querySelector('#ga-prev');
+      const refresh = function(){
+        const v = Math.max(0, parseQty(amt)); const raw = Math.floor(v/HERB_UNIT_PRICE);
+        const got = Math.min(raw, HERB_GATHER_CAP);   /* #9 单次采药上限 */
+        const ok = v>0 && v<=S.money && got>0;
+        prev.innerHTML = '单价 <b class="lat">'+HERB_UNIT_PRICE+'</b> 银/份 → 得 <b class="lat">'+got+'</b> 份（耗 '+got*HERB_UNIT_PRICE+' 银）'
+          + (raw>HERB_GATHER_CAP?'<span class="qty-warn"> · 单次上限 '+HERB_GATHER_CAP+' 份</span>':'')
+          + (v>S.money?'<span class="qty-warn"> · 银钱不足</span>':'');
+        const go = body.querySelector('#ga-go'); if(go) go.disabled = !ok;
+      };
+      body.querySelector('.qty-dec').addEventListener('click', function(){ amt.value=Math.max(0,parseQty(amt)-HERB_UNIT_PRICE); refresh(); });
+      body.querySelector('.qty-inc').addEventListener('click', function(){ amt.value=(parseQty(amt))+HERB_UNIT_PRICE; refresh(); });
+      body.querySelector('#ga-max').addEventListener('click', function(){ amt.value=Math.floor(S.money/HERB_UNIT_PRICE)*HERB_UNIT_PRICE; refresh(); });
+      amt.addEventListener('input', refresh);
+      body.querySelector('#ga-go').addEventListener('click', function(){
+        const r = gatherHerb(parseQty(amt));
+        if(!r.ok){ toast('采药失败', r.reason||'无效','danger'); return; }
+        pushLog(S.age,'采药炮制，得药 '+r.meds+' 份。',''); toast('采药','+'+r.meds+' 份','gain');
+        render(); ctx.refresh();
+      });
+      refresh();
+    }};
+  }};
+}
+function secRoamSell(){
+  return { title:'游历 / 倒卖（多选一支线）', render:function(ctx){
+    const html = '<div class="chips" id="rs-mode">'
+      + '<button class="chip chip--on" data-m="roam" type="button">远行采药</button>'
+      + '<button class="chip" data-m="sell" type="button">倒卖丹药</button></div><div id="rs-body"></div>';
+    return { html:html, wire:function(body){
+      const rsBody = body.querySelector('#rs-body'); let mode = 'roam';
+      function renderSub(){
+        if(mode==='roam'){
+          rsBody.innerHTML = '<p class="play-note">远行采药：耗银 + 健康，遇险可得珍稀药材。</p>'
+            + '<div class="qty-row"><span class="qty-label">投入</span>'
+            + '<button class="btn btn--sm qty-dec" type="button">−</button>'
+            + '<input class="qty-input" id="ro-amt" type="text" inputmode="numeric" pattern="\\d*" value="0" />'
+            + '<button class="btn btn--sm qty-inc" type="button">＋</button></div>'
+            + '<div class="qty-preview" id="ro-prev"></div>'
+            + '<button class="btn btn--primary" id="ro-go" type="button">远行采药</button>';
+          const amt = rsBody.querySelector('#ro-amt'); const prev = rsBody.querySelector('#ro-prev');
+          const refresh = function(){
+            const v = Math.max(0, parseQty(amt)); const raw = Math.floor(v/HERB_UNIT_PRICE);
+            const got = Math.min(raw, HERB_GATHER_CAP);   /* #9 单次采药上限 */
+            const ok = v>0 && v<=S.money && got>0;
+            prev.innerHTML = '得药 <b class="lat">'+got+'</b> 份（耗 '+got*HERB_UNIT_PRICE+' 银 · 健康略损）'
+              + (raw>HERB_GATHER_CAP?'<span class="qty-warn"> · 单次上限 '+HERB_GATHER_CAP+' 份</span>':'')
+              + (v>S.money?'<span class="qty-warn"> · 银钱不足</span>':'');
+            const go = rsBody.querySelector('#ro-go'); if(go) go.disabled = !ok;
+          };
+          rsBody.querySelector('.qty-dec').addEventListener('click', function(){ amt.value=Math.max(0,parseQty(amt)-HERB_UNIT_PRICE); refresh(); });
+          rsBody.querySelector('.qty-inc').addEventListener('click', function(){ amt.value=(parseQty(amt))+HERB_UNIT_PRICE; refresh(); });
+          amt.addEventListener('input', refresh);
+          rsBody.querySelector('#ro-go').addEventListener('click', function(){
+            const v = Math.max(0, parseQty(amt));
+            if(v<=0||v>S.money){ toast('远行失败','银钱不足','danger'); return; }
+            const got = Math.min(Math.floor(v/HERB_UNIT_PRICE), HERB_GATHER_CAP); if(got<=0){ toast('远行失败','无效','danger'); return; }   /* #9 单次上限 */
+            S.money = clampMoney(S, S.money-v); S.meds += got; S.health = clamp(S.health-ri(2,6),-999,S.healthMax);
+            pushLog(S.age,'远行采药，历险得药 '+got+' 份。',''); toast('远行采药','+'+got+' 份','gain');
+            render(); ctx.refresh();
+          });
+          refresh();
+        } else {
+          rsBody.innerHTML = '<p class="play-note danger-note">倒卖丹药：<span class="qty-warn">约 30% 砸手</span>亏本。当前存药 <b class="lat">'+S.meds+'</b>。</p>'
+            + '<div class="qty-row"><span class="qty-label">数量</span>'
+            + '<button class="btn btn--sm qty-dec" type="button">−</button>'
+            + '<input class="qty-input" id="sl-amt" type="text" inputmode="numeric" pattern="\\d*" value="0" />'
+            + '<button class="btn btn--sm qty-inc" type="button">＋</button>'
+            + '<button class="btn btn--sm" id="sl-max" type="button">全卖</button></div>'
+            + '<div class="qty-preview" id="sl-prev"></div>'
+            + '<button class="btn btn--primary" id="sl-go" type="button">倒卖</button>';
+          const amt = rsBody.querySelector('#sl-amt'); const prev = rsBody.querySelector('#sl-prev');
+          const refresh = function(){
+            const n = Math.max(0, parseQty(amt)); const ok = n>0 && n<=S.meds;
+            prev.innerHTML = '预计收入随行就市'+(n>S.meds?'<span class="qty-warn"> · 超出存量</span>':'');
+            const go = rsBody.querySelector('#sl-go'); if(go) go.disabled = !ok;
+          };
+          rsBody.querySelector('.qty-dec').addEventListener('click', function(){ amt.value=Math.max(0,parseQty(amt)-1); refresh(); });
+          rsBody.querySelector('.qty-inc').addEventListener('click', function(){ amt.value=(parseQty(amt))+1; refresh(); });
+          rsBody.querySelector('#sl-max').addEventListener('click', function(){ amt.value=S.meds; refresh(); });
+          amt.addEventListener('input', refresh);
+          rsBody.querySelector('#sl-go').addEventListener('click', function(){
+            const r = clinicSell(parseQty(amt));
+            if(!r.ok){ toast('倒卖失败', r.reason||'无效','danger'); return; }
+            if(r.loss>0){ pushLog(S.age,'倒卖丹药砸手，亏 '+r.loss+' 银。','bad'); toast('砸手','亏 '+r.loss+' 银','danger'); }
+            else { pushLog(S.age,'倒卖丹药，得 '+r.gain+' 银。',''); toast('倒卖','+'+r.gain+' 银','gain'); }
+            render(); ctx.refresh();
+          });
+          refresh();
+        }
+      }
+      body.querySelectorAll('#rs-mode .chip').forEach(function(b){ b.addEventListener('click', function(){
+        body.querySelectorAll('#rs-mode .chip').forEach(function(x){ x.classList.remove('chip--on'); });
+        b.classList.add('chip--on'); mode = b.getAttribute('data-m'); renderSub();
+      }); });
+      renderSub();
+    }};
+  }};
+}
+function secElixir(){
+  return { title:'服丹（风险）', render:function(ctx){
+    const exhausted = S.playBudget<=0;
+    const html = '<p class="play-note danger-note">服丹：<span class="qty-warn">约 85% 延寿</span>，否则 <span class="qty-warn">15% 毒发</span>大损健康。每窗口限 1 次。</p>'
+      + '<div class="qty-preview" id="el-prev"></div>'
+      + '<button class="btn btn--primary" id="el-go" type="button"'+(exhausted?' disabled':'')+'>服丹</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#el-prev');
+      prev.innerHTML = '存药 <b class="lat">'+S.meds+'</b>'+(S.meds<1?'<span class="qty-warn"> · 无丹可服</span>':'')+(exhausted?'<span class="qty-warn"> · 本窗口玩法次数已用尽</span>':'');
+      const go = body.querySelector('#el-go');
+      if(go) go.addEventListener('click', function(){
+        const r = clinicElixir();
+        if(!r.ok){ toast('服丹失败', r.reason||'无效','danger'); return; }
+        if(r.poison){ pushLog(S.age,'服丹中毒，形体大损。','bad'); toast('毒发','健康-'+r.h,'danger'); }
+        else { pushLog(S.age,'服丹得效，形体康健。',''); toast('延寿','健康+'+r.h,'gain'); }
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+/* ── 衙署 ── */
+function openYamenScreen(){ openPlayScreen(yamenScreenCfg()); }
+function yamenScreenCfg(){
+  return {
+    badge:'衙署', title:'入仕 · 衙署', lead:'新政、举劾，皆由你定（日常政务在左侧行动栏）。',
+    status:function(){
+      return '政绩 <b class="lat">'+S.zhengji+'</b> · 民心 <b class="lat">'+S.minxin+'/10</b> · 影响力 <b class="lat">'+S.influence+'/10</b> · 官阶 <b class="lat">'+RANKS[S.rank]+'</b> · 银 <b class="lat">'+L(S.money)+'</b>'
+        + playBudgetChip();
+    },
+    sections:[ secCollect(), secReform(), secImpeach() ],   /* 经济闭环修复2：+清点钱粮（确定性收入，每窗口 1 次） */
+    onClose:function(){ render(); }
+  };
+}
+/* 政·清点钱粮（经济闭环修复2：确定性收入，不耗行动点，每窗口限 1 次） */
+function secCollect(){
+  return { title:'清点钱粮（确定性收入 · 每窗口 1 次）', render:function(ctx){
+    const done = S.yamenChecked;
+    const gain = 12 + (S.attrs.望||0)*4 + (S.zhengji||0)*2;
+    const html = '<p class="play-note">盘点府库、清结粮册，按政绩计征入库。每窗口限 1 次。</p>'
+      + '<div class="qty-preview" id="cl-prev"></div>'
+      + '<button class="btn btn--primary" id="cl-go" type="button"'+(done?' disabled':'')+'>清点钱粮</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#cl-prev');
+      prev.innerHTML = '可得 <b class="lat">'+gain+'</b> 银（12 + 望×4 + 政绩×2）'
+        + (done?'<span class="qty-warn"> · 本窗口已清点过</span>':'');
+      const go = body.querySelector('#cl-go');
+      if(go) go.addEventListener('click', function(){
+        const r = yamenCollect();
+        if(!r.ok){ toast('未行', r.reason||'无效','danger'); return; }
+        pushLog(S.age,'清点钱粮，入账 '+r.gain+' 银。',''); toast('清点钱粮','+'+r.gain+' 银','gain');
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+function secReform(){
+  return { title:'新政（风险 · 成效大但遭攻讦）', render:function(ctx){
+    const exhausted = S.playBudget<=0;
+    const html = '<p class="play-note">推行新政，政绩大涨；然触动了人，或遭攻讦损望。每窗口限 1 次。</p>'
+      + '<div class="qty-preview" id="rf-prev"></div>'
+      + '<button class="btn btn--primary" id="rf-go" type="button"'+(exhausted?' disabled':'')+'>推行新政</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#rf-prev');
+      prev.innerHTML = '当前政绩 <b class="lat">'+S.zhengji+'</b>'+(exhausted?'<span class="qty-warn"> · 本窗口玩法次数已用尽</span>':'');
+      const go = body.querySelector('#rf-go');
+      if(go) go.addEventListener('click', function(){
+        const r = yamenReform();
+        if(!r.ok){ toast('新政失败', r.reason||'无效','danger'); return; }
+        if(r.success){ pushLog(S.age,'推行新政，政绩斐然。',''); toast('新政','政绩+','gain'); }
+        else { pushLog(S.age,'新政遭攻讦，声名受损。','bad'); toast('攻讦','望-1','danger'); }
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+function secImpeach(){
+  return { title:'举劾（风险 · 弹劾权臣）', render:function(ctx){
+    const exhausted = S.playBudget<=0;
+    const html = '<p class="play-note">举劾权臣，成则升迁；败则损望损德。每窗口限 1 次。</p>'
+      + '<div class="qty-preview" id="im-prev"></div>'
+      + '<button class="btn btn--primary" id="im-go" type="button"'+(exhausted?' disabled':'')+'>上疏举劾</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#im-prev');
+      prev.innerHTML = '当前官阶 <b class="lat">'+RANKS[S.rank]+'</b>'+(exhausted?'<span class="qty-warn"> · 本窗口玩法次数已用尽</span>':'');
+      const go = body.querySelector('#im-go');
+      if(go) go.addEventListener('click', function(){
+        const r = yamenImpeach();
+        if(!r.ok){ toast('举劾失败', r.reason||'无效','danger'); return; }
+        if(r.success){ pushLog(S.age,'举劾得直，擢升一级。',''); toast('举劾·胜','官阶+1','gain'); }
+        else { pushLog(S.age,'举劾不成，反遭忌恨。','bad'); toast('举劾·败','望-1 德-1','danger'); }
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+/* ── 朝堂（帝王 · v1.8 重设计 B2：主指标=国库/兵力/领土，四政全部风险类） ── */
+function openThroneScreen(){ openPlayScreen(throneScreenCfg()); }
+function throneScreenCfg(){
+  return {
+    badge:'朝堂', title:'帝王 · 朝堂', lead:'修养生息、御驾亲征、治国理政、酒池肉林，皆由你定。',
+    status:function(){
+      const ev2 = emperorEval(S);
+      return '国库 <b class="lat">'+L(S.treasury)+'</b> 银 · 兵力 <b class="lat">'+L(S.troops)+'</b> · 领土 <b class="lat">'+L(S.territory)+'</b> 州'
+        + (ev2 ? ' · <span class="badge">'+esc(ev2.n)+'</span>' : '')
+        + ' · 在位 <b class="lat">'+S.reignYears+'</b> 年 · 影响力 <b class="lat">'+S.influence+'/10</b>'
+        + playBudgetChip();
+    },
+    sections:[ secThroneWithdraw(), secThroneRecuperate(), secThroneCampaign(), secThroneGovern(), secThroneDecadence() ],
+    onClose:function(){ render(); }
+  };
+}
+/* 帝王·支取内帑（经济闭环修复6：确定性，不耗行动点，每窗口 1 次；国库→个人 money，补黑市/商铺出口） */
+function secThroneWithdraw(){
+  return { title:'支取内帑（确定性 · 每窗口 1 次）', render:function(ctx){
+    const done = S.emperorWithdrawn;
+    const amt = Math.min(2000, Math.floor((S.treasury||0)*0.05));
+    const html = '<p class="play-note">从国库支取内帑入私囊，供黑市、商铺花销。每窗口限 1 次。</p>'
+      + '<div class="qty-preview" id="tw-prev"></div>'
+      + '<button class="btn btn--primary" id="tw-go" type="button"'+(done?' disabled':'')+'>支取内帑</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#tw-prev');
+      prev.innerHTML = '可得 <b class="lat">'+amt+'</b> 银入私囊（min(2000, 国库×5%)）'
+        + (amt<=0?'<span class="qty-warn"> · 国库空虚</span>':'')
+        + (done?'<span class="qty-warn"> · 本窗口已支取过</span>':'');
+      const go = body.querySelector('#tw-go');
+      if(go) go.addEventListener('click', function(){
+        const r = emperorWithdraw();
+        if(!r.ok){ toast('未行', r.reason||'无效','danger'); return; }
+        pushLog(S.age,'支取内帑，得银 '+r.amt+'。',''); toast('支取内帑','+'+r.amt+' 银','gain');
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+/* 修养生息（风险 · 国库换兵力） */
+function secThroneRecuperate(){
+  return { title:'修养生息（风险 · 补兵）', render:function(ctx){
+    const exhausted = S.playBudget<=0;
+    const html = '<p class="play-note">征发徭役、休整军伍，耗国库补兵力；<span class="qty-warn">10% 疫病/逃兵</span>折兵，国库空虚则激起哗变。每窗口限 1 次。</p>'
+      + '<div class="qty-preview" id="tr2-prev"></div>'
+      + '<button class="btn btn--primary" id="tr2-go" type="button"'+(exhausted?' disabled':'')+'>修养生息</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#tr2-prev');
+      prev.innerHTML = '耗国库 <b class="lat">2万–4万</b> · 兵力 ＋2000~5000 · 望＋1'
+        + (S.treasury<20000?'<span class="qty-warn"> · 国库空虚，恐哗变</span>':'')
+        + (exhausted?'<span class="qty-warn"> · 本窗口玩法次数已用尽</span>':'');
+      const go = body.querySelector('#tr2-go');
+      if(go) go.addEventListener('click', function(){
+        const r = emperorRecuperate();
+        if(!r.ok){ toast('未行', r.reason||'无效','danger'); return; }
+        if(r.mutiny){ pushLog(S.age,'征发不继，军中哗变，折兵 '+r.loss+'。','bad'); toast('哗变','折兵 '+r.loss,'danger'); }
+        else if(r.plague){ pushLog(S.age,'修养生息，然疫病流行，折兵 '+r.plagueLoss+'。','bad'); toast('疫病','折兵 '+r.plagueLoss,'danger'); }
+        else { pushLog(S.age,'修养生息，兵民归心，得兵 '+r.got+'。',''); toast('生息','+'+r.got+' 兵','gain'); }
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+/* 御驾亲征（核心风险 · 拓土） */
+function secThroneCampaign(){
+  return { title:'御驾亲征（核心风险 · 拓土）', render:function(ctx){
+    const exhausted = S.playBudget<=0;
+    const rate = emperorCampaignRate(S);
+    const html = '<p class="play-note danger-note">御驾亲征：敌力 <b class="lat">2万–6万</b>，<span class="qty-warn">兵<敌×0.6 必败</span>；胜则拓土但耗兵耗库。每窗口限 1 次。</p>'
+      + '<div class="qty-preview" id="tc-prev"></div>'
+      + '<button class="btn btn--primary" id="tc-go" type="button"'+(exhausted?' disabled':'')+'>御驾亲征</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#tc-prev');
+      prev.innerHTML = '预计胜率 <b class="lat">'+Math.round(rate*100)+'%</b> · 胜：领土 ＋5~18 州、兵力 -3000~8000、国库 -2万~6万 · 败：折兵损地伤身'
+        + ((S.troops||0)<12000?'<span class="qty-warn"> · 兵力不足（需≥12000）</span>':'')
+        + (exhausted?'<span class="qty-warn"> · 本窗口玩法次数已用尽</span>':'');
+      const go = body.querySelector('#tc-go');
+      if(go) go.addEventListener('click', function(){
+        const r = emperorCampaign();
+        if(!r.ok){ toast('亲征未行', r.reason||'无效','danger'); return; }
+        if(r.win){ pushLog(S.age,'御驾亲征克捷，拓土 '+r.gain+' 州，然兵疲财耗。',''); toast('亲征·胜','拓土+'+r.gain+' 州','gain'); }
+        else { pushLog(S.age,'御驾亲征受挫，折兵 '+r.loss+'，失地 '+r.terr+'。','bad'); toast('亲征·败','折兵 '+r.loss,'danger'); }
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+/* 治国理政（风险 · 国库收入） */
+function secThroneGovern(){
+  return { title:'治国理政（风险 · 生财）', render:function(ctx){
+    const exhausted = S.playBudget<=0;
+    const html = '<p class="play-note">与群臣对弈，成则国库充盈、政通人和；败则国库微减、威望受损。每窗口限 1 次。</p>'
+      + '<div class="qty-preview" id="tg-prev"></div>'
+      + '<button class="btn btn--primary" id="tg-go" type="button"'+(exhausted?' disabled':'')+'>治国理政</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#tg-prev');
+      prev.innerHTML = '胜：国库 ＋3万~9万 · 望＋1 · 败：国库 -5000~2万 · 望－1（20% 党争损德）'
+        + (exhausted?'<span class="qty-warn"> · 本窗口玩法次数已用尽</span>':'');
+      const go = body.querySelector('#tg-go');
+      if(go) go.addEventListener('click', function(){
+        const r = emperorGovern();
+        if(!r.ok){ toast('未行', r.reason||'无效','danger'); return; }
+        if(r.success){ pushLog(S.age,'治国理政，府库渐充，得银 '+r.gain+'。',''); toast('理政·胜','国库+'+r.gain,'gain'); }
+        else { pushLog(S.age,'治国理政不顺，国库减损'+r.loss+'。'+(r.faction?'党争又起，有清议攻讦。':''),'bad'); toast('理政·败','国库-'+r.loss,'danger'); }
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+/* 酒池肉林（风险 · 享乐侵蚀国本） */
+function secThroneDecadence(){
+  return { title:'酒池肉林（享乐 · 侵蚀国本）', render:function(ctx){
+    const exhausted = S.playBudget<=0;
+    const html = '<p class="play-note danger-note">穷奢极欲，以国库换快活：<span class="qty-warn">耗国库、兵力、领土</span>，健康大涨而道德受损，立「酒色」之名。每窗口限 1 次。</p>'
+      + '<div class="qty-preview" id="td-prev"></div>'
+      + '<button class="btn btn--danger" id="td-go" type="button"'+(exhausted?' disabled':'')+'>酒池肉林</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#td-prev');
+      prev.innerHTML = '耗国库 1万–3万 · 兵力 -1000~4000 · 领土 -1~5 → 健康 ＋15~30（封顶） · 心境＋1 · 道德－1'
+        + (S.treasury<10000?'<span class="qty-warn"> · 国库空虚，难以铺张</span>':'')
+        + (exhausted?'<span class="qty-warn"> · 本窗口玩法次数已用尽</span>':'');
+      const go = body.querySelector('#td-go');
+      if(go) go.addEventListener('click', function(){
+        const r = emperorDecadence();
+        if(!r.ok){ toast('未行', r.reason||'无效','danger'); return; }
+        pushLog(S.age,'酒池肉林，彻夜笙歌，国本渐蚀。','bad'); toast('酒池肉林','耗国库 '+r.cost,'danger');
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+
+/* ── 道场（宗教；修仙占位不入） ── */
+function openTempleScreen(){ openPlayScreen(templeScreenCfg()); }
+function templeScreenCfg(){
+  return {
+    badge:'道场', title:'宗教 · 道场', lead:'传教、法会、化斋，皆由你定。',
+    status:function(){
+      const ev = sectEval(S);
+      return '信徒 <b class="lat">'+S.believers+'</b> · 香火 <b class="lat">'+S.incense+'</b>'
+        + (ev ? ' · <span class="badge">'+esc(ev.n)+'</span>' : '')
+        + ' · 影响力 <b class="lat">'+S.influence+'/10</b>'
+        + playBudgetChip();
+    },
+    sections:[ secPreach(), secRite(), secAlms(), secXianPlaceholder() ],
+    onClose:function(){ render(); }
+  };
+}
+function secPreach(){
+  return { title:'传教（确定性 · 不耗玩法点）', render:function(ctx){
+    const html = '<p class="play-note">开坛传教，耗财帛养信徒；<span class="qty-warn">信徒逾 800 后每年 10% 官府查禁</span>，损信徒损德。</p>'
+      + '<div class="qty-preview" id="pr-prev"></div>'
+      + '<button class="btn btn--primary" id="pr-go" type="button">传教</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#pr-prev');
+      prev.innerHTML = '耗银 <b class="lat">20–80</b> · 信徒 ＋30~120' + (S.money<20?'<span class="qty-warn"> · 银钱不足</span>':'');
+      const go = body.querySelector('#pr-go');
+      if(go) go.addEventListener('click', function(){
+        const r = templePreach();
+        if(!r.ok){ toast('传教失败', r.reason||'无效','danger'); return; }
+        if(r.busted){ pushLog(S.age,'传教过盛，官府查禁，信众散去 '+r.loss+' 人。','bad'); toast('查禁','-'+r.loss+' 信徒','danger'); }
+        else { pushLog(S.age,'开坛传教，信众渐聚 '+r.got+' 人。',''); toast('传教','+'+r.got+' 信徒','gain'); }
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+function secRite(){
+  return { title:'法会（风险 · 香火按信徒）', render:function(ctx){
+    const exhausted = S.playBudget<=0;
+    const bustP = clamp(0.12 + (S.believers||0)*0.0002 - S.moral*0.01, 0.05, 0.4);
+    const html = '<p class="play-note danger-note">举办法会，香火按信徒加成；然 <span class="qty-warn">妖言被查</span>则损香火信徒损德。每窗口限 1 次。</p>'
+      + '<div class="qty-preview" id="ri-prev"></div>'
+      + '<button class="btn btn--primary" id="ri-go" type="button"'+(exhausted?' disabled':'')+'>举办法会</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#ri-prev');
+      prev.innerHTML = '耗银 5–20 · 香火 ＋约 '+Math.floor((S.believers||0)*0.05)+'+2~6 · 被查率 <b class="lat">'+Math.round(bustP*100)+'%</b>'
+        + ((S.believers||0)<10?'<span class="qty-warn"> · 信徒太少（需≥10）</span>':'')
+        + (exhausted?'<span class="qty-warn"> · 本窗口玩法次数已用尽</span>':'');
+      const go = body.querySelector('#ri-go');
+      if(go) go.addEventListener('click', function(){
+        const r = templeRite();
+        if(!r.ok){ toast('法会失败', r.reason||'无效','danger'); return; }
+        if(r.success){ pushLog(S.age,'举办法会，香火鼎盛，香火 ＋'+r.incense+'。',''); toast('法会','香火+'+r.incense,'gain'); }
+        else { pushLog(S.age,'法会被指妖言，香火信徒俱损。','bad'); toast('被查','德-1 · 信徒减','danger'); }
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+function secAlms(){
+  return { title:'化斋（风险 · 香火信徒换财）', render:function(ctx){
+    const exhausted = S.playBudget<=0;
+    const P = clamp(0.15 - (S.attrs.脉||0)*0.01, 0.05, 0.2);
+    const html = '<p class="play-note danger-note">化斋募施，耗香火信徒分成供奉换财帛；<span class="qty-warn">与权贵合作破裂</span>则被迫害。每窗口限 1 次。</p>'
+      + '<div class="qty-preview" id="al-prev"></div>'
+      + '<button class="btn btn--primary" id="al-go" type="button"'+(exhausted?' disabled':'')+'>化斋</button>';
+    return { html:html, wire:function(body){
+      const prev = body.querySelector('#al-prev');
+      prev.innerHTML = '耗信徒 10–40 · 香火 2–6 · 得财约 '+(ALMS_PROFIT_R*(10+2))+'~'+(ALMS_PROFIT_R*(40+6))+' 银 · 破裂率 <b class="lat">'+Math.round(P*100)+'%</b>'
+        + (S.incense<2 || (S.believers||0)<10?'<span class="qty-warn"> · 香火信徒不足</span>':'')
+        + (exhausted?'<span class="qty-warn"> · 本窗口玩法次数已用尽</span>':'');
+      const go = body.querySelector('#al-go');
+      if(go) go.addEventListener('click', function(){
+        const r = templeAlms();
+        if(!r.ok){ toast('化斋失败', r.reason||'无效','danger'); return; }
+        if(r.break){ pushLog(S.age,'化斋遇权贵迫害，信众散去 '+r.bl+' 人。','bad'); toast('破裂','-'+r.bl+' 信徒 · 伤身','danger'); }
+        else { pushLog(S.age,'化斋募施，得财 '+r.gain+' 银。',''); toast('化斋','+'+r.gain+' 银','gain'); }
+        render(); ctx.refresh();
+      });
+    }};
+  }};
+}
+function secXianPlaceholder(){
+  return { title:'修仙（在行动栏）', render:function(ctx){
+    return { html:'<p class="play-note">闭关、入秘境、突破、飞升等修仙动作在左侧行动栏，本界面不重复。道场只司宗教之事。</p>' };
+  }};
+}
+
+/* v1.8 PRD · 行事页路线专属界面入口（同黑市按钮显隐逻辑） */
+function renderPlayScreens(){
+  const wrap = document.getElementById('play-slot');
+  if(!wrap || !S) return;
+  const shang = S.routes.shang && S.routes.shang.active;
+  const jun   = S.routes.jun   && S.routes.jun.active;
+  const zheng = S.routes.zheng && S.routes.zheng.active;
+  const yi    = S.routes.yi    && S.routes.yi.active;
+  const zong  = (S.routes.zong && S.routes.zong.active) || !!S.flags.修仙入门;
+  const dw    = S.identity==='diwang' || S.identity==='weimian';
+  if(!(shang||jun||zheng||yi||zong||dw)){ wrap.hidden = true; return; }
+  wrap.hidden = false;
+  let btns = '';
+  if(shang) btns += '<button class="btn btn--bm" data-r="shang" type="button">商铺</button>';
+  if(jun)   btns += '<button class="btn btn--bm" data-r="jun" type="button">军帐</button>';
+  if(zheng) btns += '<button class="btn btn--bm" data-r="zheng" type="button">衙署</button>';
+  if(yi)    btns += '<button class="btn btn--bm" data-r="yi" type="button">医馆</button>';
+  if(dw)    btns += '<button class="btn btn--bm" data-r="throne" type="button">朝堂</button>';
+  if(zong)  btns += '<button class="btn btn--bm" data-r="zong" type="button">道场</button>';
+  wrap.innerHTML = btns;
+  wrap.querySelectorAll('.btn--bm').forEach(function(b){
+    b.addEventListener('click', function(){
+      const r = b.getAttribute('data-r');
+      if(r==='shang') openShopScreen();
+      else if(r==='jun') openArmyScreen();
+      else if(r==='zheng') openYamenScreen();
+      else if(r==='yi') openClinicScreen();
+      else if(r==='throne') openThroneScreen();
+      else if(r==='zong') openTempleScreen();
+    });
+  });
 }
 
 /* ═══════════════════════════════════════════════════════════════════

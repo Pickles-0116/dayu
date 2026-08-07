@@ -95,6 +95,374 @@ function drawOrigins(n){
   return out;
 }
 
+/* ───────── v1.8 PRD · 商铺界面辅助（UI 消费） ───────── */
+function marketPrice(cat){ return (S.market && S.market[cat]) || (MARKET_CATS[cat] ? MARKET_CATS[cat].base : 0); }
+/* 持有年限估值乘子：持有越久，行情越熟，出货价越好（上限 +30%） */
+function holdCoef(cat){ return 1 + Math.min((S.stockHold[cat]||0), 10) * 0.03; }
+/* 地产查封率（行业细分 §二）：guanxi 越高越低 */
+function monopolySeizeRate(){ return Math.max(0.04, 0.18 - S.guanxi*0.03); }
+
+/* ══ 商铺界面·纯逻辑（UI 薄壳调用，便于确定性单测） ══ */
+/* 进货：投入 amt 银两，按市价购入整单位；返回 {ok, units, amt} */
+function shopBuy(cat, amt){
+  amt = Math.max(0, Math.floor(amt||0));
+  const price = marketPrice(cat);
+  const units = Math.floor(amt / price);
+  if(amt<=0) return { ok:false, reason:'投入银钱不能为 0' };
+  if(amt>S.money) return { ok:false, reason:'银钱不足' };
+  if(units<=0) return { ok:false, reason:'不足以购入 1 单位' };
+  S.money = clampMoney(S, S.money - amt);
+  if(!S.stock[cat]) S.stock[cat] = {qty:0, cost:0};
+  S.stock[cat].qty += units; S.stock[cat].cost += amt; S.stockHold[cat] = 0;
+  return { ok:true, units:units, amt:amt };
+}
+/* 出货：卖 n 单位；返回 {ok, income} */
+function shopSell(cat, n){
+  n = Math.max(0, Math.floor(n||0));
+  if(!S.stock[cat] || S.stock[cat].qty<=0) return { ok:false, reason:'仓中无货' };
+  if(n<=0) return { ok:false, reason:'出货数量不能为 0' };
+  if(n>S.stock[cat].qty) return { ok:false, reason:'持有数量不足' };
+  const price = marketPrice(cat), coef = holdCoef(cat);
+  const income = Math.round(price * n * coef);
+  const avg = S.stock[cat].cost / S.stock[cat].qty;
+  const costOut = Math.round(avg * n);
+  S.money = clampMoney(S, S.money + income);
+  S.stock[cat].qty -= n; S.stock[cat].cost -= costOut;
+  if(S.stock[cat].qty<=0){ S.stock[cat] = {qty:0,cost:0}; S.stockHold[cat]=0; }
+  return { ok:true, income:income };
+}
+/* 地产购置 / 变卖（八折回血） */
+function shopEstateBuy(amt){
+  amt = Math.max(0, Math.floor(amt||0));
+  if(amt<=0) return { ok:false, reason:'购置金额不能为 0' };
+  if(amt>S.money) return { ok:false, reason:'银钱不足' };
+  S.money = clampMoney(S, S.money-amt); S.estates += amt;
+  return { ok:true, amt:amt };
+}
+function shopEstateSell(){
+  if(S.estates<=0) return { ok:false, reason:'无地产可卖' };
+  const back = Math.floor(S.estates*0.8); S.money = clampMoney(S, S.money+back); S.estates=0;
+  return { ok:true, back:back };
+}
+/* 打点立垄断（一次性）：耗银、官商关系+1、道德-1 */
+function shopMonopoly(amt){
+  amt = Math.max(0, Math.floor(amt||0));
+  if(amt<=0) return { ok:false, reason:'打点银钱不能为 0' };
+  if(amt>S.money) return { ok:false, reason:'银钱不足' };
+  if(S.flags.垄断) return { ok:false, reason:'已立垄断' };
+  S.money = clampMoney(S, S.money-amt); S.flags.垄断 = true; S.guanxi = Math.min(10, S.guanxi+1); S.moral = Math.max(0, S.moral-1);
+  return { ok:true, amt:amt };
+}
+
+/* ══ v1.8 P1 · 六路线玩法纯逻辑（UI 薄壳调用，确定性单测） ══ */
+/* 军·募兵（确定性定量）：投入 amt 银，按兵种单价得兵、兵权 +1；受银硬上限，可多次 */
+function armyRecruit(amt, kind){
+  amt = Math.max(0, Math.floor(amt||0));
+  if(amt<=0) return { ok:false, reason:'投入银钱不能为 0' };
+  if(amt>S.money) return { ok:false, reason:'银钱不足' };
+  const ut = (kind && typeof BARRACK_UNITS!=='undefined' && BARRACK_UNITS[kind]) ? BARRACK_UNITS[kind] : {n:'兵', price:BARRACK_UNIT_PRICE};
+  const got = Math.min(Math.floor(amt / ut.price), BARRACK_RECRUIT_CAP);   /* #9 单次成军上限，防一次拉爆 */
+  if(got<=0) return { ok:false, reason:'不足以募 1 '+ut.n };
+  const cost = got * ut.price;           /* 只扣实际成军的部分，余数退回（与界面预览口径一致） */
+  S.money = clampMoney(S, S.money - cost);
+  S.troops += got;
+  /* #9 兵力递减：已达军阀规模后募兵不再涨兵权（兵权靠军功/操练而非无限买） */
+  if(S.troops < TROOP_BINGQUAN_CAP) S.bingquan = Math.min(10, S.bingquan + 1);
+  return { ok:true, troops:got, bingquan:(S.troops<TROOP_BINGQUAN_CAP?1:0), amt:cost, kind:kind };
+}
+/* 军·操练（风险）：耗兵力/健康，兵权+；受 playBudget 约束 */
+function armyDrill(){
+  if(S.playBudget<=0) return { ok:false, reason:'本窗口玩法次数已用尽' };
+  if(S.troops<10) return { ok:false, reason:'兵力不足，无法操练' };
+  S.playBudget--; S.troops -= ri(2,6); S.health = clamp(S.health - ri(1,4), -999, S.healthMax);
+  S.bingquan = Math.min(10, S.bingquan + 1);
+  return { ok:true, drill:true };
+}
+/* 军·外伐（核心风险）：经济闭环修复3（2026-08-07）——敌力随兵力动态缩放
+   E = ri(0.5t, 1.3t) 钳 [60, 4000]：始终存在「打得过的仗」（敌下限 0.5t < 兵，兵≥敌×0.6 恒成立）与
+   「打不过的硬仗」（敌上限 1.3t），消除前期「兵少必败 → 更穷」死锁；胜得银对齐设计口径
+   gain = max(ri(150,350), E×0.6)（修 A2：原实现仅 45~240 银，比设计 §7.2 的 150~350 低近半）。
+   tactic 影响胜率/前置。 */
+function armyCampaign(tactic){
+  if(S.playBudget<=0) return { ok:false, reason:'本窗口玩法次数已用尽' };
+  if(!S.troops || S.troops<20) return { ok:false, reason:'兵力不足，难以兴兵' };
+  if(tactic==='奇袭' && !S.flags.谍报) return { ok:false, reason:'奇袭须先遣谍报' };
+  const t = S.troops;
+  const E = clamp(ri(Math.round(t*0.5), Math.round(t*1.3)), 60, 4000);
+  let rate = (t < E*0.6) ? 0 : clamp((t - E*0.4)/(E*0.8), 0.2, 0.9);
+  if(tactic==='奇袭') rate = clamp(rate+0.1, 0.2, 0.95);
+  if(tactic==='坚壁') rate = clamp(rate-0.05, 0.15, 0.85);
+  S.playBudget--;
+  if(!chance(rate)){
+    const loss = Math.floor(t * (0.2 + ri(0,20)/100));
+    S.troops = Math.max(0, S.troops - loss); S.merit = Math.max(0,S.merit-1); S.attrs.望 = Math.max(0,S.attrs.望-1);
+    addInfluence('jun', -1);   /* #7：军线败仗损军·influence */
+    return { ok:true, win:false, E:E, rate:rate, loss:loss };
+  }
+  const gain = Math.max(ri(150,350), Math.floor(E*0.6));   /* 经济闭环修复3：对齐设计 §7.2 胜得 150~350，后期随 E 放大 */
+  S.money = clampMoney(S, S.money + gain);
+  S.troops = Math.max(0, S.troops - ri(5,20));
+  S.merit += (S.warWins>=WARWINS_SOFT_CAP) ? ri(1,2) : ri(2,4);   /* #9 外伐胜场软上限：超此 merit 增益减半 */
+  S.bingquan = Math.min(10, S.bingquan + 1); S.warWins += 1;
+  addInfluence('jun', 1);   /* #7：军线胜仗涨军·influence（独立键，顶层聚合） */
+  return { ok:true, win:true, E:E, rate:rate, gain:gain };
+}
+/* 医·坐堂（主线，风险）：cured+ri(1,3) rep+1；chance(0.08) 治死 rep-2 道德-1；rep≥8 由 checkIdentity 固化国手 */
+function clinicTreat(){
+  if(S.playBudget<=0) return { ok:false, reason:'本窗口玩法次数已用尽' };
+  S.playBudget--;
+  if(chance(0.08)){
+    S.rep = Math.max(0, S.rep - 2); S.moral = Math.max(0, S.moral - 1);
+    return { ok:true, dead:true, rep:-2 };
+  }
+  const cured = ri(1,3);
+  S.cured += cured; S.rep = Math.min(10, S.rep + 1);
+  return { ok:true, dead:false, cured:cured, rep:1 };
+}
+/* 医·采药/炮制（确定性定量）：投入 amt 银 → meds；受银硬上限 */
+function gatherHerb(amt){
+  amt = Math.max(0, Math.floor(amt||0));
+  if(amt<=0) return { ok:false, reason:'投入银钱不能为 0' };
+  if(amt>S.money) return { ok:false, reason:'银钱不足' };
+  const got = Math.min(Math.floor(amt / HERB_UNIT_PRICE), HERB_GATHER_CAP);   /* #9 单次采药上限，防一次拉爆 */
+  if(got<=0) return { ok:false, reason:'不足以采 1 份' };
+  const cost = got * HERB_UNIT_PRICE;    /* 余数退回，与界面预览口径一致 */
+  S.money = clampMoney(S, S.money - cost); S.meds += got;
+  return { ok:true, meds:got, amt:cost };
+}
+/* 医·倒卖丹药（风险）：meds→money，chance(0.3) 砸手亏 */
+function clinicSell(n){
+  n = Math.max(0, Math.floor(n||0));
+  if(S.meds<=0) return { ok:false, reason:'无药可卖' };
+  if(n<=0) return { ok:false, reason:'数量不能为 0' };
+  if(n>S.meds) return { ok:false, reason:'存量不足' };
+  S.meds -= n;
+  if(chance(0.3)){ const loss = Math.floor(n * HERB_UNIT_PRICE * 0.5); return { ok:true, sold:true, gain:0, loss:loss }; }
+  const gain = Math.round(n * HERB_UNIT_PRICE * ri(120,200)/100);
+  S.money = clampMoney(S, S.money + gain);
+  return { ok:true, sold:true, gain:gain };
+}
+/* 医·服丹（风险）：meds≥1 → chance(0.85) 延寿 h+ri(5,15)；否则 chance(0.15) 毒发 h-ri(15,40) */
+function clinicElixir(){
+  if(S.playBudget<=0) return { ok:false, reason:'本窗口玩法次数已用尽' };
+  if(S.meds<1) return { ok:false, reason:'无丹药可服' };
+  S.meds -= 1; S.playBudget--;
+  if(chance(0.85)){ const h = ri(5,15); S.health = clamp(S.health + h, -999, S.healthMax); S.lifespan += Math.floor(h/2); return { ok:true, poison:false, h:h }; }
+  const h = ri(15,40); S.health = clamp(S.health - h, -999, S.healthMax); return { ok:true, poison:true, h:h };
+}
+/* 政·新政（风险）：成效大但可能遭攻讦；受 playBudget 约束 */
+function yamenReform(){
+  if(S.playBudget<=0) return { ok:false, reason:'本窗口玩法次数已用尽' };
+  S.playBudget--;
+  if(chance(0.7)){ S.zhengji += ri(2,4); addInfluence('zheng', 1); return { ok:true, success:true }; }   /* #7：政线新政涨政·influence */
+  S.zhengji = Math.max(0, S.zhengji - ri(0,2)); S.attrs.望 = Math.max(0, S.attrs.望-1);
+  return { ok:true, success:false };
+}
+/* 政·举劾（风险）：弹劾权臣，成则升迁，败则损望 */
+function yamenImpeach(){
+  if(S.playBudget<=0) return { ok:false, reason:'本窗口玩法次数已用尽' };
+  S.playBudget--;
+  if(chance(0.55)){ S.rank = Math.min(4, S.rank+1); S.zhengji += ri(1,3); addInfluence('zheng', 1); return { ok:true, success:true }; }   /* #7：政线举劾涨政·influence；封顶 rank4（勋贵），帝王 tier 仅由称帝事件授予，杜绝政线误刷帝王 */
+  S.moral = Math.max(0, S.moral-1); S.attrs.望 = Math.max(0, S.attrs.望-1);
+  return { ok:true, success:false };
+}
+/* 政·清点钱粮（经济闭环修复2：确定性收入，不耗行动点，每窗口限 1 次——doUpdate 重置 yamenChecked）
+   money += 12 + 望×4 + 政绩×2：政绩主指标与经济收益挂钩，从政不再「白干」 */
+function yamenCollect(){
+  if(S.yamenChecked) return { ok:false, reason:'本窗口已清点过钱粮' };
+  if(!(S.routes.zheng && S.routes.zheng.active)) return { ok:false, reason:'未入仕途' };
+  const gain = 12 + (S.attrs.望||0)*4 + (S.zhengji||0)*2;
+  S.money = clampMoney(S, S.money + gain);
+  S.yamenChecked = true;
+  return { ok:true, gain:gain };
+}
+/* 宗教·法会（风险）：按信徒涨香火，妖言被查则损 */
+function templeRite(){
+  if(S.playBudget<=0) return { ok:false, reason:'本窗口玩法次数已用尽' };
+  if((S.believers||0)<10) return { ok:false, reason:'信徒寥寥，法会不彰' };
+  S.playBudget--;
+  const cost = ri(5,20);
+  S.money = clampMoney(S, S.money - cost);
+  /* v1.8 重设计 §4.2 法会：香火按信徒数量；被查率随信徒涨、随道德跌 */
+  const bustP = clamp(0.12 + (S.believers||0)*0.0002 - S.moral*0.01, 0.05, 0.4);
+  if(chance(bustP)){
+    S.incense   = Math.max(0, S.incense - ri(3,8));
+    S.believers = Math.max(0, (S.believers||0) - ri(30,80));
+    S.moral     = Math.max(0, S.moral - 1);
+    S.sermonBusted = (S.sermonBusted||0) + 1;
+    return { ok:true, success:false, bustP:bustP, cost:cost };
+  }
+  const inc = Math.floor((S.believers||0) * 0.05) + ri(2,6);
+  S.incense += inc;
+  return { ok:true, success:true, incense:inc, bustP:bustP, cost:cost };
+}
+/* 宗教·传教（确定性 · 不耗玩法点）：耗财帛养信徒；信徒>800 后 10% 官府查禁 */
+function templePreach(){
+  const cost = ri(20,80);
+  if(S.money < cost) return { ok:false, reason:'银钱不足，难以开坛' };
+  S.money = clampMoney(S, S.money - cost);
+  const got = ri(30,120);
+  S.believers = (S.believers||0) + got;
+  if(S.believers > 800 && chance(0.10)){
+    const loss = ri(150,300);
+    S.believers = Math.max(0, S.believers - loss);
+    S.moral = Math.max(0, S.moral - 1);
+    return { ok:true, busted:true, got:got, loss:loss, cost:cost };
+  }
+  return { ok:true, busted:false, got:got, cost:cost };
+}
+/* 宗教·化斋（风险）：耗香火+信徒分成供奉换财帛；合作破裂则被权贵迫害（PROFIT_R 见 data.js） */
+function templeAlms(){
+  if(S.playBudget<=0) return { ok:false, reason:'本窗口玩法次数已用尽' };
+  if(S.incense<2 || (S.believers||0)<10) return { ok:false, reason:'香火信徒不足，难以化缘' };
+  S.playBudget--;
+  const ci = ri(2,6), cb = ri(10,40);
+  S.incense   = Math.max(0, S.incense - ci);
+  S.believers = Math.max(0, (S.believers||0) - cb);
+  const P = clamp(0.15 - (S.attrs.脉||0)*0.01, 0.05, 0.2);
+  if(chance(P)){
+    const bl = ri(100,300);
+    S.believers = Math.max(0, (S.believers||0) - bl);
+    S.incense   = Math.max(0, S.incense - ri(1,3));
+    S.health    = clamp(S.health - ri(5,15), -999, S.healthMax);
+    return { ok:true, break:true, P:P, costIncense:ci, costBelievers:cb, bl:bl };
+  }
+  const gain = Math.floor((ci + cb) * ALMS_PROFIT_R);
+  S.money = clampMoney(S, S.money + gain);
+  return { ok:true, break:false, gain:gain, P:P, costIncense:ci, costBelievers:cb };
+}
+
+/* ══ v1.8 帝王线重设计 · 朝堂四政（纯逻辑，UI 薄壳调用；全部为风险类，受 playBudget 约束） ══ */
+function isEmperor(s){ return s.identity==='diwang' || s.identity==='weimian'; }
+/* 朝堂·御驾亲征（重写 §3.4）：敌力 E=ri(2万,6万)；兵<敌×0.6 必败；胜率公式与军线外伐同构。
+   胜：领土 +ri(5,18)、兵力 -ri(3000,8000)、国库 -ri(20000,60000)（战争损耗）· campaignWins+1；
+   败：兵力 -ri(8000,20000)、领土 -ri(2,10)、健康 -ri(5,15)。 */
+function emperorCampaign(){
+  if(S.playBudget<=0) return { ok:false, reason:'本窗口玩法次数已用尽' };
+  if(!isEmperor(S)) return { ok:false, reason:'非帝王不可行此政' };
+  if(!S.troops || S.troops<12000) return { ok:false, reason:'兵力空虚，难以亲征' };
+  S.playBudget--;
+  const E = ri(20000, 60000);
+  const rate = (S.troops < E*0.6) ? 0 : clamp((S.troops - E*0.4)/(E*0.8), 0.2, 0.9);
+  if(!chance(rate)){
+    const loss = ri(8000,20000), terr = ri(2,10), h = ri(5,15);
+    S.troops    = Math.max(0, S.troops - loss);
+    S.territory = Math.max(1, S.territory - terr);
+    S.health    = clamp(S.health - h, -999, S.healthMax);
+    S.attrs.望  = Math.max(0, S.attrs.望 - 1);
+    return { ok:true, win:false, E:E, rate:rate, loss:loss, terr:terr, h:h };
+  }
+  const gain = ri(5,18), loss = ri(3000,8000), cost = ri(20000,60000);
+  S.territory += gain;
+  S.troops    = Math.max(0, S.troops - loss);
+  S.treasury  = Math.max(0, S.treasury - cost);
+  S.campaignWins = (S.campaignWins||0) + 1;
+  S.attrs.望  = Math.min(10, S.attrs.望 + 1);
+  S.merit     += ri(2,4);
+  return { ok:true, win:true, E:E, rate:rate, gain:gain, loss:loss, cost:cost };
+}
+/* 朝堂·修养生息（§3.4）：国库 2万–4万 → 兵力 +2000~5000、望+；10% 疫病/逃兵折兵；
+   国库<2万则征发不继，激起哗变（折兵+损德损望） */
+function emperorRecuperate(){
+  if(S.playBudget<=0) return { ok:false, reason:'本窗口玩法次数已用尽' };
+  if(!isEmperor(S)) return { ok:false, reason:'非帝王不可行此政' };
+  S.playBudget--;
+  if(S.treasury < 20000){
+    const loss = ri(5000,12000);
+    S.troops   = Math.max(0, S.troops - loss);
+    S.moral    = Math.max(0, S.moral - 1);
+    S.attrs.望 = Math.max(0, S.attrs.望 - 1);
+    return { ok:true, mutiny:true, loss:loss };
+  }
+  const cost = ri(20000,40000);
+  S.treasury -= cost;
+  const got = ri(2000,5000);
+  S.troops += got; S.attrs.望 = Math.min(10, S.attrs.望 + 1);
+  if(chance(0.10)){
+    const plague = ri(1000,3000);
+    S.troops = Math.max(0, S.troops - plague);
+    return { ok:true, mutiny:false, plague:true, cost:cost, got:got, plagueLoss:plague };
+  }
+  return { ok:true, mutiny:false, plague:false, cost:cost, got:got };
+}
+/* 朝堂·治国理政（§3.4）：群臣掣肘 vs 帝才对拼；胜：国库 +3万~9万、望+、governWins+1；
+   败：国库微减、望-；小概率党争反噬损德 */
+function emperorGovern(){
+  if(S.playBudget<=0) return { ok:false, reason:'本窗口玩法次数已用尽' };
+  if(!isEmperor(S)) return { ok:false, reason:'非帝王不可行此政' };
+  S.playBudget--;
+  const zi = S.attrs.智||0;
+  const court = ri(0,30) + zi*2;
+  const me    = zi*8 + ri(0,15);
+  if(me >= court){
+    const gain = ri(30000,90000);
+    S.treasury += gain;
+    S.attrs.望 = Math.min(10, S.attrs.望 + 1);
+    S.governWins = (S.governWins||0) + 1;
+    return { ok:true, success:true, gain:gain };
+  }
+  const loss = ri(5000,20000);
+  S.treasury = Math.max(0, S.treasury - loss);
+  S.attrs.望 = Math.max(0, S.attrs.望 - 1);
+  if(chance(0.2)){
+    S.moral = Math.max(0, S.moral - 1);
+    return { ok:true, success:false, loss:loss, faction:true };
+  }
+  return { ok:true, success:false, loss:loss };
+}
+/* 朝堂·酒池肉林（§3.4）：国库 1万–3万、兵力 -1000~4000、领土 -1~5 → 健康 +15~30（封顶）、心境+；
+   道德-、立「酒色」、decadenceCount+1 */
+function emperorDecadence(){
+  if(S.playBudget<=0) return { ok:false, reason:'本窗口玩法次数已用尽' };
+  if(!isEmperor(S)) return { ok:false, reason:'非帝王不可行此政' };
+  if(S.treasury < 10000) return { ok:false, reason:'国库空虚，难以铺张' };
+  S.playBudget--;
+  const c = ri(10000,30000);
+  S.treasury -= c;
+  S.troops    = Math.max(0, S.troops - ri(1000,4000));
+  S.territory = Math.max(1, S.territory - ri(1,5));
+  S.health    = clamp(S.health + ri(15,30), -999, S.healthMax);
+  S.mind      = Math.min(10, S.mind + 1);
+  S.moral     = Math.max(0, S.moral - 1);
+  S.flags.酒色 = true;
+  S.decadenceCount = (S.decadenceCount||0) + 1;
+  return { ok:true, cost:c, decadence:S.decadenceCount };
+}
+/* 帝王·支取内帑（经济闭环修复6：确定性，不耗行动点，每窗口限 1 次——doUpdate 重置 emperorWithdrawn）
+   国库 → 个人 money：min(2000, floor(treasury×0.05))。个人 money 与国库解耦但有通道，帝王线也能参与黑市/商铺。 */
+function emperorWithdraw(){
+  if(S.emperorWithdrawn) return { ok:false, reason:'本窗口已支取过内帑' };
+  if(!isEmperor(S)) return { ok:false, reason:'非帝王不可支取内帑' };
+  const amt = Math.min(2000, Math.floor((S.treasury||0)*0.05));
+  if(amt<=0) return { ok:false, reason:'国库空虚' };
+  S.treasury -= amt;
+  S.money = clampMoney(S, S.money + amt);
+  S.emperorWithdrawn = true;
+  return { ok:true, amt:amt };
+}
+/* 御驾亲征预计胜率（界面预览口径：以中位敌力估算；实际执行再随机 E） */
+function emperorCampaignRate(s){
+  if(!s.troops || s.troops < 12000) return 0;
+  return clamp((s.troops - 40000*0.4)/(40000*0.8), 0.2, 0.9);
+}
+/* 帝王评语（重设计 §九 · 轻量实现：按当前国力实时评定，零数值增益；不作 IDENTITIES 以免与 diwang/weimian pri:1 互扰） */
+function emperorEval(s){
+  if(s.territory>=200 && s.treasury>=1000000) return {id:'yitong',   n:'一统之君'};
+  if(s.territory>=50  && s.treasury>0)        return {id:'shoucheng',n:'守成之君'};
+  if(s.territory>0    && s.territory<50)      return {id:'pianan',   n:'偏安之主'};
+  return null;
+}
+/* 宗教评语（重设计 §十 · 轻量实现：按香火/信徒实时评定；开宗祖师需信徒≥1000） */
+function sectEval(s){
+  if(s.believers>=1000) return {id:'kaizu',  n:'开宗祖师'};
+  if(s.flags.护国)      return {id:'huguo',  n:'国师 · 护国'};
+  if(s.incense>=10)     return {id:'jiaozong',n:'教宗'};
+  if(s.incense>=5 && s.believers>=300) return {id:'gaogong', n:'高功'};
+  if(s.incense>=2)      return {id:'fashi',  n:'法师'};
+  if(s.routes.zong && s.routes.zong.active) return {id:'shami', n:'道童'};
+  return null;
+}
+
 /* ───────── 初始化一世 ───────── */
 function newLife(origin){
   const attrs={}; ATTRS.forEach(function(k){ attrs[k]=3; });                 /* D-02 基准 3 */
@@ -130,6 +498,22 @@ function newLife(origin){
     world: chance(.3)?'乱世':'治世',
     merit:0, incense:0, cult:0, xianTier:-1, hanghai:0,     /* v1.7 C线：航海外交计数（郑和锁 7） */
     blackMarketChance:0,                                     /* v1.8：黑市窗口判定命中置 1（行事页按钮化） */
+    /* v1.8 PRD · 商铺界面资源（自主定量） */
+    stock:{},          /* 囤货：{ 品类id: {qty, cost} }，qty=持有单位数，cost=累计投入银两 */
+    stockHold:{},      /* 持有年限：{ 品类id: 年数 }，逐年 +1，出货估值乘子用 */
+    market: MARKET_KEYS.reduce(function(o,k){ o[k]=MARKET_CATS[k].base; return o; }, {}), /* 行情现价（每年游走） */
+    estates:0,         /* 商·地产（已投银两，被动收入；有查封/灾害清零风险） */
+    guanxi:0,          /* 商·官商关系 0~10（买官勾结获得；降查封率、解锁垄断） */
+    /* v1.8 P1 · 六路线资源字段（自主定量界面） */
+    troops:0, bingquan:0, influence:0, warWins:0,   /* 军 */
+    rep:0, cured:0, meds:0,                         /* 医 */
+    zhengji:0, minxin:0,                            /* 政 */
+    believers:0,                                   /* 宗教 */
+    treasury:0, territory:0,                         /* 帝王（称帝初始化由 setIdentity 钩子注入） */
+    campaignWins:0, governWins:0, decadenceCount:0, /* 帝王 · 功业计数（档位/青史判定用） */
+    sermonBusted:0,                                 /* 宗教 · 法会被查累计（档位判定用） */
+    yamenChecked:false, emperorWithdrawn:false,     /* 经济闭环修复2/6：清点钱粮/支取内帑 窗口内限次标志（doUpdate 重置） */
+    playBudget: Math.max(2, stageN(0)), /* 玩法界面窗口行动点（窗口边界按 stageN 缩放重置，见 doUpdate；保底 2 次/窗口） */
     married:false, children:[],
     routes:{}, phase:'idle', queue:[], actionDone:false, ended:false, pendingEnd:null,
     fate:null, fateLastYear:-1,                              /* 机遇卡槽 */
@@ -215,6 +599,23 @@ function applyEff(eff, ctx){
   if(eff.merit){ S.merit=Math.max(0,S.merit+eff.merit); deltas.push({k:'军功', v:eff.merit}); }
   if(eff.incense){ S.incense=Math.max(0,S.incense+eff.incense); deltas.push({k:'香火', v:eff.incense}); }
   if(eff.cult){ S.cult=Math.max(0,S.cult+eff.cult); deltas.push({k:'修为', v:eff.cult}); }
+  /* v1.8 P1 · 六路线资源（统一单写入口，不直改 S.xxx） */
+  if(eff.troops)    S.troops    = Math.max(0, S.troops + eff.troops);
+  if(eff.bingquan)  S.bingquan  = clamp(S.bingquan + eff.bingquan, 0, 10);
+  if(eff.influence){
+    /* #7：带 influenceLine 则写入对应路线独立键并聚合；否则直写顶层（向后兼容） */
+    if(eff.influenceLine && S.routes[eff.influenceLine]) addInfluence(eff.influenceLine, eff.influence);
+    else S.influence = clamp(S.influence + eff.influence, 0, 10);
+  }
+  if(eff.rep)       S.rep       = clamp(S.rep + eff.rep, 0, 10);
+  if(eff.cured)     S.cured     = Math.max(0, S.cured + eff.cured);
+  if(eff.meds)      S.meds      = Math.max(0, S.meds + eff.meds);
+  if(eff.zhengji)   S.zhengji   = Math.max(0, S.zhengji + eff.zhengji);
+  if(eff.minxin)    S.minxin    = clamp(S.minxin + eff.minxin, 0, 10);
+  if(eff.believers) S.believers = Math.max(0, S.believers + eff.believers);
+  /* v1.8 帝王线重设计 · 国库/领土（兵力已在 eff.troops 覆盖；territory 保底 1 州，称帝后不失国本） */
+  if(eff.treasury)  S.treasury  = Math.max(0, S.treasury + eff.treasury);
+  if(eff.territory) S.territory = Math.max(1, S.territory + eff.territory);
   /* v1.8 黑市：健康上限 ±N（蛇酒/符水/延寿丹；上限下调时 health 随之封顶） */
   if(eff.healthMax){
     const b=S.healthMax;
@@ -302,6 +703,15 @@ function setIdentity(id){
   const cur = S.identity ? IDENTITIES[S.identity] : null;
   if(cur && cur.pri <= ent.pri) return false;
   S.identity = id; S.identityAge = S.age; S.reignYears = 0;
+  /* v1.8 帝王线重设计 · 称帝初始化（仅此一次：setIdentity 的 cur.pri<=ent.pri 守卫保证帝位不重复立）：
+     个人财帛全部转化国库，初兵初土落位——此后主指标为国库/兵力/领土（朝堂界面） */
+  if(id==='diwang' || id==='weimian'){
+    S.treasury  = 500000 + Math.max(0, S.money||0);
+    S.money     = 0;
+    S.troops    = 30000 + (S.attrs.武||0) * 2000;
+    S.territory = 100;
+    pushLog(S.age, '践祚，国库初备五十万两，兵民归心。', 'key');
+  }
   pushLog(S.age, '一生达成：'+ent.n+'。'+(ent.log||''), 'key');
   return true;
 }
@@ -453,11 +863,16 @@ function comboCheck(id){
   if(!isBright(id)) return null;
   const cur = activeBrightIds().filter(function(x){ return x!==id; });
   if(cur.length===0) return 'ok';
-  if(cur.length===1 && comboAllowed(cur[0], id)) return 'ok';
-  return 'switch';
+  if(S.flags['圣旨']){                       // 奉旨：恢复多线逻辑（COMBO_WHITELIST，至多 2 条）
+    if(cur.length===1 && comboAllowed(cur[0], id)) return 'ok';
+    return 'switch';
+  }
+  return 'deny';                             // 无圣旨：第 2 条明线一律禁止
 }
 function activateRoute(id, silent){
   if(S.routes[id] && S.routes[id].active) return;
+  /* v1.8 圣旨：无圣旨第 2 条明线硬阻（deny）——引擎层最后防线，不依赖 UI 提示分支 */
+  if(comboCheck(id)==='deny') return;
   /* F-R3：明线超额或组合非法 → 转途，旧明线离线 */
   if(comboCheck(id)==='switch'){
     activeBrightIds().forEach(function(old){
@@ -468,11 +883,21 @@ function activateRoute(id, silent){
       if(ro) pushLog(S.age, '转途：舍「'+ro.n+'」而就他业。前功尽在履历，不在手上。', 'bad');
     });
   }
-  S.routes[id] = { active:true, node:0, lastAge:-99 };
+  S.routes[id] = { active:true, node:0, lastAge:-99, influence:0 };   /* v1.8 P1 · #7：每线独立影响力键，顶层 S.influence 仅聚合展示 */
   S.flags.mundane = false;                          /* 入仕途即脱离「碌碌」 */
   const r = ROUTES.filter(function(x){return x.id===id;})[0];
   if(r) pushLog(S.age, '入「'+r.n+'」之途。', 'key');
   if(id==='xian') S.flags.修仙入门 = true;
+}
+/* v1.8 P1 · #7：影响力按路线独立记账（军·influence / 政·influence / 宗教·influence 各自一档），
+   顶层 S.influence 仅作聚合展示并封顶 10，避免军+政零成本双向叠加突破 F-R3。 */
+function addInfluence(line, amt){
+  const r = S.routes[line] || (S.routes[line] = { active:false, node:0, lastAge:-99, influence:0 });
+  r.influence = clamp((r.influence||0) + amt, 0, 10);
+  const sum = (S.routes.jun && S.routes.jun.influence||0)
+             + (S.routes.zheng && S.routes.zheng.influence||0)
+             + (S.routes.zong && S.routes.zong.influence||0);
+  S.influence = clamp(sum, 0, 10);
 }
 /* 从业要求随年龄变严（v1.8：6 岁一档 → 4 岁一档，进一步收紧大器晚成）：
    每过 4 岁，各属性门槛 +1，至 ATTR_CAP 封顶 */
@@ -501,7 +926,7 @@ function primaryRouteId(){
 function routeIncome(r){
   if(r==='shang') return 18 + S.attrs.财*10;
   if(r==='zheng') return 12 + S.attrs.望*4;
-  if(r==='jun')   return 10 + S.merit*2;
+  if(r==='jun')   return 10 + S.merit*2 + Math.floor((S.troops||0)*0.1);   /* 经济闭环修复1：军饷按兵力发，兵越多越养得起 */
   if(r==='yi')    return 8  + S.attrs.才*3;
   if(r==='xian')  return 4;
   if(r==='zong')  return 6  + S.incense;
@@ -628,6 +1053,55 @@ function doSettle(){
   const eco = yearEconomy();
   S.money = clampMoney(S, S.money + eco.net);
   notes.push({t:'财帛', x:(eco.net>=0?('岁入 ＋'+eco.net):('岁出 －'+(-eco.net)))+' 银', c: eco.net>=0?'gain':'loss'});
+
+  /* v1.8 PRD · 商铺界面：年度被动结算（地产/垄断/行情游走/持有年限） */
+  if(S.estates > 0){
+    const inc = Math.floor(S.estates * 0.08);
+    if(inc > 0){ S.money = clampMoney(S, S.money + inc); notes.push({t:'地产', x:'田宅岁入 ＋'+inc+' 银', c:'gain'}); }
+    /* 查封/灾害清零（行业细分 §二）：率 = max(0.04, 0.18 - guanxi*0.03) */
+    const seize = Math.max(0.04, 0.18 - S.guanxi*0.03);
+    if(chance(seize)){ S.estates = 0; notes.push({t:'地产', x:'田宅遭查封籍没，片瓦无存', c:'danger'}); }
+  }
+  if(S.flags.垄断){
+    /* 垄断利润（行业细分 §二）：chance(0.7)→money+W*(0.3~0.6)；否则被查 chance(0.3) 道德 -1 */
+    if(chance(0.7)){
+      const W = Math.max(20, S.attrs.脉*15 + S.attrs.财*10);
+      const profit = Math.floor(W * (0.3 + ri(0,30)/100));
+      S.money = clampMoney(S, S.money + profit); notes.push({t:'垄断', x:'垄断货利 ＋'+profit+' 银', c:'gain'});
+    } else if(chance(0.3)){
+      S.moral = Math.max(0, S.moral - 1); notes.push({t:'垄断', x:'垄断事泄，声名受损（道德 －1）', c:'loss'});
+    }
+  }
+  /* 行情游走（0.9~1.1 乘子，钳于 [base*0.5, base*1.6]）+ 持有年限 +1（仅持有时） */
+  MARKET_KEYS.forEach(function(k){
+    const base = MARKET_CATS[k].base;
+    let p = S.market[k] * (0.9 + ri(0,20)/100);
+    p = clamp(p, base*0.5, base*1.6);
+    /* 先取整再钳整数边界：避免 Math.round 把上限(如 12.8)顶成 13 而越界 */
+    S.market[k] = clamp(Math.round(p), Math.ceil(base*0.5), Math.floor(base*1.6));
+    if(S.stock[k] && S.stock[k].qty > 0){ S.stockHold[k] = (S.stockHold[k]||0) + 1; }
+  });
+
+  /* v1.8 P1 · 六路线年度被动结算（一律走 applyEff 单写入口，不直改 S.xxx） */
+  if(S.money < 0) applyEff({troops:-ri(20,50)});                                  /* 军·粮饷不继兵力流失 */
+  /* 经济闭环修复4（2026-08-07）：删除医声望 drift / 囤药年度砸手 / 宗香火 drift——
+     三处均为设计文档无依据的「系统反向抵消」（坐堂/法会努力被每年白扣，且囤药与 clinicSell 倒卖 30% 砸手重复叠加），
+     纯负面直接删除；国手 rep≥8 / 教宗 incense≥10 门槛不再被系统反向抵消。 */
+
+  /* v1.8 帝王线重设计 · 在位被动：每年按领土征税补国库 + 小概率边境侵扰（武力对拼）
+     数值口径见《v1.8_帝王与宗教线重设计方案》§3.2/§3.3（TAX_PER_TERR / BORDER_RAID_P） */
+  if(S.identity==='diwang' || S.identity==='weimian'){
+    const tax = Math.floor((S.territory||0) * TAX_PER_TERR);
+    if(tax>0){ S.treasury = (S.treasury||0) + tax; notes.push({t:'岁入', x:'国库 ＋'+tax, c:'gain'}); }
+    if(chance(BORDER_RAID_P)){
+      const E  = ri(20, 60);
+      const me = (S.attrs.武||0) + ri(0, 20);
+      if(me >= E){ const g = ri(2,8); S.territory = Math.max(1, (S.territory||0) + g);
+        notes.push({t:'边捷', x:'击退来犯，领土 ＋'+g, c:'gain'}); }
+      else { const l = ri(3,12); S.territory = Math.max(1, (S.territory||0) - l);
+        notes.push({t:'边警', x:'失地，领土 －'+l, c:'loss'}); }
+    }
+  }
 
   /* 机遇卡派发：每 3 年（age>=6 且距上次派发 ≥3 年）· 槽位空才发 */
   if(!S.fate && S.age>=6 && S.age-S.fateLastYear>=3){ drawFate(); S.fateLastYear=S.age; }
@@ -816,10 +1290,16 @@ function advanceByStage(){
   return q;
 }
 
-/* ───────── 阶段 ④：更　新 ───────── */
+/* ───────── 阶段 ④：更　新 ─────────
+   v1.8 P1 · #11 修复：窗口边界重置玩法界面行动点（风险操作预算）。
+   原 doUpdate 从未被调用 → playBudget 自 newLife 初始化为 1 后永不重置，
+   实际变成「整局只能玩一次」。现改为随窗口长度缩放并在 enterActionPhase（每次回到主界面）调用。
+   2026-08-07 用户反馈修正：原公式 Math.max(1, round(stageN/3)) 令 16 岁后所有窗口预算=1，
+   成年后每窗口风险操作仍只能 1 次。改为 Math.max(2, stageN)：窗口内每年可做 1 次、保底 2 次。 */
 function doUpdate(){
-  S.actionDone = false;
-  S.phase = 'idle';
+  S.playBudget = Math.max(2, stageN(S.age));
+  /* 经济闭环修复2/6：清点钱粮/支取内帑 的窗口内限次标志随窗口重置（enterActionPhase 每窗口调用 doUpdate） */
+  S.yamenChecked = false; S.emperorWithdrawn = false;
 }
 
 /* ───────── 死法判定（规格 §2.6-3：只留「怎么死的」，成就另由身份轴给出） ─────────
@@ -876,6 +1356,11 @@ function judgeNaturalDeath(byHealth){
       jiaozong:   'jiaozong',    /* 教宗 */
       huguo:      'huguo',       /* 护国 */
       zhenren:    'zhenren',     /* 真人 */
+      sanxiu:     'sanxiu',      /* 散修 */
+      daoren:     'daoren',      /* 道人 */
+      zhenjun:    'zhenjun',     /* 真君 */
+      dixian:     'dixian',      /* 地仙 */
+      zhixian:    'zhixian',     /* 谪仙 */
       diwang:     'xiongzhu',    /* 帝王（非凶终时） */
       weimian:    'guangwu'      /* 位面之子（刘秀） */
     };

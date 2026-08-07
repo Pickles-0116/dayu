@@ -16,6 +16,18 @@ const ATTR_FULL = {体:'体质',智:'智力',才:'才学',武:'武艺',魅:'魅�
 const RANKS = ['贱籍／赤贫','庶民','士商','官身','勋贵／宗亲','帝王'];
 const TIER_WEIGHT = [30,30,20,12,6,2];   /* D-08 层级权重 */
 
+/* ───────── 商线·行情品类（v1.8 PRD：商铺界面自主定量） ─────────
+   base = 单位基准价（银/单位）；行情每年在 [base*0.5, base*1.6] 区间随机游走。
+   持有年限系数 = 1 + min(持有年数,10)*0.03（见 engine.marketPrice / holdCoef）。 */
+const MARKET_CATS = {
+  yao:  { n:'药材', base:8  },
+  liang:{ n:'粮',   base:4  },
+  si:   { n:'丝',   base:20 },
+  cha:  { n:'茶',   base:14 },
+  yan:  { n:'盐',   base:30 }
+};
+const MARKET_KEYS = Object.keys(MARKET_CATS);
+
 /* ───────── ① 出身表（24 项 · T0–T5 七层） ───────── */
 const ORIGINS = [
  {id:'guer',   n:'孤儿乞丐',    t:0, rank:0, rn:'赤贫',        off:{体:-1,魅:-1,财:-3,望:-3,脉:-2}, tags:['颠沛','饥寒'],       lean:'无（纯挣扎）',       hook:'破庙栖身，寒冬乞活', beggar:true, pauper:true},
@@ -64,8 +76,9 @@ const ROUTES = [
   chain:'zheng', desc:'赴考取功名，由科举入仕。', vis:()=>true,
   denyText:'贱籍不得应试 · 须先脱籍'},
  {id:'yi',   n:'从医',      kind:'明线', layer:'立身', age:16, attr:{才:5,智:8},
-  condText:'需 习医启蒙', cond:s=>true, chain:'yi',
-  desc:'悬壶坐堂，医道亦是仕途外的一条正路。', vis:()=>true},
+  condText:'需 黑市购得行医执照', cond:s=>!!s.flags['行医执照'], chain:'yi',
+  desc:'悬壶坐堂，医道亦是仕途外的一条正路。', vis:()=>true,
+  denyText:'无照不得行医 · 须先购行医执照'},
  {id:'xian', n:'修仙',      kind:'暗线', layer:'出世', age:0,  attr:{},
   condText:'仙缘未至 / 破书强入', /* v1.8 黑市改造：凡人+心境≥10+道德≥10+持空白书籍 可强入 xian */
   cond:s=>!!(s.flags.仙缘||s.flags.始皇求仙||s.flags.取经悟道||s.flags.始皇遗脉||s.flags.金蝉遗蜕)
@@ -839,7 +852,7 @@ zong:{ n:'宗教', nodes:[
     ok:{txt:'紫衣袈裟加身。你在朝会上有了一个不用跪的位置。',
         eff:{incense:4,a:{望:3,脉:2},rank:4,adv:1}}},
    {l:'自立教门，另开法统', hint:'危 · 香火＋6 · 事发即以邪教论剿', danger:true,
-    p:s=>clamp(.42+s.incense*.02+s.attrs.魅*.04,.25,.78),
+    p:s=>clamp(.42+s.incense*.02+s.attrs.魅*.04+Math.min(.15,(s.believers||0)*.0001),.25,.78),
     ok:{txt:'新教三年而遍五州。信众称你为「教主」，官府暂时还叫你「先生」。',
         eff:{incense:6,a:{望:2,魅:2},flags:['创教'],adv:1}},
     ko:{txt:'官军围山的那天下着雨。经卷烧了三日不绝。', eff:{end:'b21'}}}
@@ -851,7 +864,7 @@ zong:{ n:'宗教', nodes:[
     ok:{txt:'你把寺中金像熔了铸钱，送去了北边的军营。灭法之议遂寝。',
         eff:{incense:2,a:{望:3},moral:1,adv:1}}},
    {l:'闭门抗诏，护法不退', hint:'危 · 成则一代教宗 · 败则灭法之劫', danger:true,
-    p:s=>clamp(.3+s.incense*.025+s.attrs.望*.03,.18,.7),
+    p:s=>clamp(.3+s.incense*.025+s.attrs.望*.03+Math.min(.15,(s.believers||0)*.0001),.18,.7),
     ok:{txt:'僵持四十日，朝廷收回成命。此后百年，此山称祖庭。',
         eff:{incense:5,a:{望:4},mind:2,adv:1}},
     ko:{txt:'山门被撞开的时候，你正在敲最后一遍钟。', eff:{end:'b21b'}}},
@@ -1932,8 +1945,39 @@ const BLACKMARKET_GOODS = [
  {id:'blankbook',n:'空白书籍', d:'无字之书，似有所待。',       use:'hold', price:40, mech:'blankbook'},
  {id:'poying',   n:'破婴丹',   d:'元婴突破时服，成算大增。',   use:'hold', price:30, mech:'poying'},
  {id:'changsheng',n:'长生不老丹药·半成品', d:'火候未到，凶吉参半。', use:'hold', price:50, mech:'changsheng'},
- {id:'revolver', n:'左轮·一颗子弹', d:'非本时代之物，寒光慑人。', use:'hold', price:45, mech:'revolver'}
+ {id:'revolver', n:'左轮·一颗子弹', d:'非本时代之物，寒光慑人。', use:'hold', price:45, mech:'revolver'},
+ /* v1.8 圣旨与行医执照改造：2 件新增黑市道具（持 flags，经 applyEff 生效） */
+ {id:'edict',     n:'圣旨',     d:'奉天承运，皇帝诏曰：允尔兼济多途，不必困于一业。', use:'hold', price:30, eff:{flags:['圣旨']}},
+ {id:'medLicense',n:'行医执照', d:'官颁行医之凭。无此照而治病，谓之"庸医杀人"，罪可下狱。', use:'hold', price:15, eff:{flags:['行医执照']}}
 ];
+
+/* ───────── v1.8 P1 · 六路线玩法数据表 ───────── */
+const BARRACK_UNIT_PRICE = 10;                       /* 军·募 1 兵默认银价 */
+/* 军·募兵兵种：v1.8 用户拍板「按最简单的来」——单一兵种，不做兵种选择（原 器械/粮秣 非兵种项删除，
+   兵种无区分纯价格差异的「买贵即亏」问题一并消除；粮饷继续由 doSettle 隐性机制表达） */
+const BARRACK_UNITS = {
+  bing:  { n:'募兵',   price:BARRACK_UNIT_PRICE }
+};
+const HERB_UNIT_PRICE = 8;                            /* 医·采药：采 1 份银价 */
+const HERB_UNITS = {                                  /* 医·药材品类（展示用） */
+  cao:   { n:'草药',   price:8  },
+  gu:    { n:'固本',   price:12 },
+  ling:  { n:'灵药',   price:20 }
+};
+const CAMPAIGN_TACTICS = [                            /* 军·外伐战法（多选一，内联渲染） */
+  { id:'野战', n:'野战',     hint:'堂堂正正，胜负凭实力',         req:null },
+  { id:'坚壁', n:'坚壁清野', hint:'损耗低、胜率略降',           req:null },
+  { id:'奇袭', n:'奇袭',     hint:'胜率 +10%，须先遣谍报',       req:s=>!!s.flags.谍报 }
+];
+/* v1.8 P1 · #9 瓶颈常量（防确定性操作无限刷拉满，详见玩法设计总纲 §八 #9） */
+const BARRACK_RECRUIT_CAP = 500;   /* 募兵单次成军上限（防一次拉爆） */
+const HERB_GATHER_CAP     = 50;    /* 采药单次上限 */
+const TROOP_BINGQUAN_CAP  = 3000;  /* 兵力达此值后，募兵不再涨兵权（兵力递减：已是大军阀） */
+const WARWINS_SOFT_CAP    = 10;    /* 外伐胜场软上限：超此 merit 增益减半 */
+/* v1.8 P1 · 帝王与宗教重设计（详见《帝王与宗教线重设计方案》） */
+const TAX_PER_TERR  = 2000;   /* 每州年税：领土 100 州 → 20 万/年 */
+const BORDER_RAID_P = 0.15;   /* 边境侵扰年概率 */
+const ALMS_PROFIT_R = 3;      /* 化斋利润率：财帛 = (耗香火+耗信徒) × 此值（v1.8 重设计 §七-7 初稿） */
 
 /* ───────── ⑥ 结局表（终局 42 + 过程坏结局 26 = 68） ───────── */
 const ENDINGS = {
@@ -1943,6 +1987,14 @@ const ENDINGS = {
  zhongdao:   {n:'中道破败', k:'bad',  b:'败亡 · 商', ep:'起于毫末，几成大业。一舟之覆，半生俱尽。晚岁佣于旧铺，客有识者，皆掩面而过。'},
  qingshi:    {n:'青史名臣', k:'good', b:'善终 · 政', ep:'释褐之初，即以直闻。历官三十载，所至有声。卒之日，京师罢市。史官书曰：其人不长于谋身，而长于谋国。', hist:{who:'少保 于谦', era:'1398–1457', txt:'土木之变，京师震恐，议南迁者众。谦厉声曰：言南迁者，可斩也。遂立新君，守九门，退瓦剌。后以「意欲」二字论死，抄家之日，无余赀，唯正室锁一箱，乃赐袍剑。'}},
  qingliufin: {n:'清流自守', k:'good', b:'善终 · 政', ep:'不党不争，居官如客。虽无赫赫之功，亦无戚戚之咎。归田之日，行囊唯书数箧。', hist:{who:'司马光', era:'1019–1086', txt:'与王安石论新法不合，退居洛阳十五年，绝口不论时事，专修《资治通鉴》。书成而身已老。'}},
+/* v1.8 封版 · 政线定位档位善终铭文（§十二·3/4：ach → 青史善终，与 IDENTITIES.ach 对齐） */
+ nengli:    {n:'能吏', k:'good', b:'善终 · 政', ep:'起于刀笔，以能声闻。所至剔蠹弊、清积案，吏畏而民安。解印归里之日，囊无余金，惟故纸数箧。', hist:{who:'成龙', era:'1617–1684', txt:'知县起家，治盗断案，所至有能声。累迁两江总督，以清廉强干称，卒谥「清端」。'}},
+ liangmu:   {n:'良牧', k:'good', b:'善终 · 政', ep:'守一郡如守一家。开沟渎，垦稻田，劝农桑。及其去，老稚攀辕，遮道不得行。', hist:{who:'召信臣', era:'?–?', txt:'南阳太守，为民兴利，开沟渎，垦稻田，户口殷盛。吏民称「召父」。'}},
+ fengjiang: {n:'封疆大吏', k:'good', b:'善终 · 政', ep:'节制一方，屏藩社稷。禁烟则雷厉，御边则周防。虽谤议盈廷，而境内晏然。', hist:{who:'林则徐', era:'1785–1850', txt:'湖广总督，禁烟御边，虎门销烟。后谪伊犁，犹垦荒兴水利，民立祠祀之。'}},
+ zaifu:     {n:'宰辅', k:'good', b:'善终 · 政', ep:'位极人臣，一言兴邦。新法既行，怨谤随之，而持之十年不悔。身后功过，聚讼千年。', hist:{who:'王安石', era:'1021–1086', txt:'同平章事，行新法。新旧党争起伏，罢相再三。身后功过，聚讼千年。'}},
+ xunli:     {n:'循吏', k:'good', b:'善终 · 政', ep:'奉公守法，民怀其惠。清丈田亩，平赋税，豪右侧目而穷黎安。备棺上疏，直声动天下。', hist:{who:'海瑞', era:'1514–1587', txt:'备棺上疏，直声动天下。官户部主事，清丈田亩，平赋税，民称「海青天」。'}},
+ quanchen:  {n:'权臣', k:'bad',  b:'被诛 · 政', ep:'结援树党，权倾朝野。票拟独断，中外奔走其门。及新君立，首以为的，籍没之日，金珠如山而身不保。', hist:{who:'严嵩', era:'1480–1567', txt:'柄国二十年，票拟独断。后得罪下狱，年八十七，寄食墓舍而死，天下快之。'}},
+ jianchen:  {n:'奸臣', k:'bad',  b:'被诛 · 政', ep:'构陷忠良，富可敌国。倡「丰亨豫大」之说，竭天下以奉一人。汴京破前贬死，天下快之。', hist:{who:'蔡京', era:'1047–1126', txt:'崇宁柄国，倡「丰亨豫大」，六贼之首。汴京破前贬死潭州，天下快之。'}},
  jianning:   {n:'奸佞权臣', k:'bad',  b:'被诛 · 政', ep:'倾巧以取容，深结以自固。一时权倾中外，及新君立，首以为的。籍没之日，金银堆积如山，无一钱可赎其命。', hist:{who:'和珅', era:'1750–1799', txt:'秉政二十年，仁宗即位十五日而下狱。籍没家产估银八亿两，当国库十余年之入。赐白绫自尽，年五十。'}},
  dangzheng:  {n:'党争赐死', k:'bad',  b:'赐死 · 政', ep:'一念择党，遂系一身。风向既转，无地可容。使者持杯至，尚整衣冠而受。', hist:{who:'张居正（身后）', era:'1525–1582', txt:'生前柄国十年，考成法行，太仓粟支十年。殁后二年被夺谥、抄家，长子自缢，家人饿死者十余口。'}},
  xinglin:    {n:'杏林国手', k:'good', b:'善终 · 医', ep:'活人无算，而不自矜。贵者召之未必往，贫者呼之未尝不至。殁后，四方设位而哭者，不知其数。', hist:{who:'董奉', era:'?–?', txt:'居庐山，为人治病不取钱，重者令种杏五株，轻者一株。数年得十万余株，郁然成林。后世称医家为「杏林」，本此。'}},
@@ -1951,14 +2003,24 @@ const ENDINGS = {
  xinglinju:  {n:'杏林巨贾兼国手', k:'good', b:'善终 · 双绝', ep:'术既通神，业亦称雄。悬壶于市而不废其仁，聚财于家而不忘其本。二者兼得，世所罕闻。'},
  qisi:       {n:'起死回生', k:'good', b:'近仙缘 · 医', ep:'尝有已殓者，为其一针而苏。自是人不敢以医目之。或谓其术通玄，或谓其德感天。年至耄耋，无疾而逝，貌如少壮。', hist:{who:'扁鹊', era:'?–?', txt:'过虢，虢太子暴亡，鹊诊为「尸厥」，针之而苏。人以为能生死人。鹊曰：越人非能生死人也，此自当生者，越人能使之起耳。'}},
  mingjiang:  {n:'一代名将', k:'good', b:'善终 · 军', ep:'身经百战，未尝弃一卒。封侯之日，解甲归第，杜门谢客。人问其故，曰：刀入鞘，则可久。', hist:{who:'汾阳王 郭子仪', era:'697–781', txt:'再造唐室，权倾天下而朝不忌，功盖一代而主不疑。每有诏至，即日就道，不问所之。年八十五而终。'}},
+/* v1.8 封版 · 军线定位档位善终铭文（§十二·1/2：ach → 青史善终，与 IDENTITIES.ach 对齐） */
+ pianpi:    {n:'偏裨', k:'good', b:'善终 · 军', ep:'每战先登，身被数创而不退。积功迁校尉，部曲亲之如父兄。解甲之日，乡人不知其为将。', hist:{who:'乐进', era:'?–218', txt:'本帐下吏，每战先登。从曹操屡有勋效，迁折冲将军，短小精悍，胆烈过人。'}},
+ xiaowei:   {n:'校尉', k:'good', b:'善终 · 军', ep:'领一校之士，厉兵秣马。羽扇纶巾，谈笑破敌。年少立功，为世所艳称。', hist:{who:'周瑜', era:'175–210', txt:'二十四岁为中郎将，治兵江东。赤壁一战，火攻破曹，奠定三分。'}},
+ zhenjiang: {n:'镇将', k:'good', b:'善终 · 军', ep:'节度一方，兵符在握。河阳之战，以寡破众，挫其锐卒。功成不居，归镇如初。', hist:{who:'李光弼', era:'708–764', txt:'与郭子仪齐名，统朔方军。河阳之战，以寡破众，挫安史锐卒，威震两河。'}},
+ zhuguo:    {n:'柱国', k:'good', b:'善终 · 军', ep:'位列柱国，勋高柱石。出则为将，入则为相，图像凌烟，功盖一代而主不疑。', hist:{who:'李靖', era:'571–649', txt:'平萧铣、灭突厥、破吐谷浑。图像凌烟阁，封卫国公，出将入相，一代完人。'}},
  mingchen:  {n:'一代名臣', k:'good', b:'善终 · 政', ep:'起于寒素，以直声闻。历仕三十载，所至有政声。卒之日，京师士民罢市以送。史臣论曰：其智足以谋国，其节足以厉俗。', hist:{who:'少保 于谦', era:'1398–1457', txt:'土木之变，京师震恐，议南迁者众。谦厉声曰：言南迁者，可斩也。遂立新君，守九门，退瓦剌。后以「意欲」二字论死，抄家之日，无余赀，唯正室锁一箱，乃赐袍剑。'}},
  fanzhen:    {n:'藩镇割据', k:'grey', b:'割据 · 军', ep:'拥兵一方，诏令不出其境。朝廷姑息，终身不朝。史不书其忠，亦不书其叛，唯书曰：某镇，某氏，四十年。', hist:{who:'魏博 田承嗣', era:'?–?', txt:'安史降将，据魏博七州，自署官吏，赋税不入朝廷。朝廷不能制，反以女妻其子。传五世，凡四十九年。'}},
  tusi:       {n:'兔死狗烹', k:'bad',  b:'被诛 · 军', ep:'功高于世，而不知退。赐宴之日，君臣皆泣。归第三日而薨，医者不敢言其状。', hist:{who:'中山王 徐达', era:'1332–1385', txt:'明开国第一功臣。史载背疽方作，帝赐蒸鹅（疽最忌鹅），达泣而食之，逾日卒。此说见于野史，正史不书。'}},
  mage:       {n:'马革裹尸', k:'bad',  b:'战死 · 军', ep:'临阵不退，中矢仍立。军中收其骸，裹以马革而归。铭曰：将军死绥，古之道也。', hist:{who:'伏波将军 马援', era:'前14–49', txt:'年六十二请击武陵蛮，帝哀其老，不许。援曰：男儿要当死于边野，以马革裹尸还葬耳。卒于军中。'}},
  feisheng:   {n:'得道飞升', k:'ascend', b:'飞升 · 仙', ep:'九劫既过，罡风为途。回顾人间，如观掌上一沤。所遗者，山中一草庐，庐前一石，石上二字：曾在。'},
  /* 成就铭文（非死法）：元婴既成而未及飞升者，一生所立在此。飞升仍以 feisheng 为终局。 */
- zhenren:    {n:'山中真人', k:'good', b:'成就 · 仙', ep:'元婴既结，寒暑不侵。虽未及三千之数，已非人间寻常之寿。山下人指其庐曰：中有真人。', hist:{who:'陈抟', era:'?–989', txt:'隐武当、华山，服气辟谷，一睡百余日。太宗召见，赐号「希夷先生」。端拱二年卒于莲花峰下，肢体犹温，异香经旬不散。'}},
- bingjie:    {n:'兵解化道', k:'grey', b:'兵解 · 仙', ep:'自碎金丹，蜕形而去。或言其转生海外，或言其散为清气。此身既绝于人世，亦不复入宗谱。'},
+  zhenren:    {n:'山中真人', k:'good', b:'成就 · 仙', ep:'元婴既结，寒暑不侵。虽未及三千之数，已非人间寻常之寿。山下人指其庐曰：中有真人。', hist:{who:'陈抟', era:'?–989', txt:'隐武当、华山，服气辟谷，一睡百余日。太宗召见，赐号「希夷先生」。端拱二年卒于莲花峰下，肢体犹温，异香经旬不散。'}},
+  sanxiu:    {n:'云游散修', k:'good', b:'成就 · 仙', ep:'芒鞋竹杖，遍历名山。不隶宫观，不事王侯。终身未得大药，而胸中丘壑，已非尘世俗子所能梦见。', hist:{who:'魏伯阳', era:'?–?', txt:'东汉炼丹家，《周易参同契》作者，后世奉为丹经之祖。云游四方，不事王侯，以炉火为事。'}},
+  daoren:    {n:'在世道人', k:'good', b:'成就 · 仙', ep:'结庐人境，而心在青冥。乡邻有病，辄往视之；有争，辄往解之。人不知其深浅，但呼为「那道人」。', hist:{who:'陶弘景', era:'456–536', txt:'南朝道士，隐句曲山。武帝礼聘不出，国家大事每就谘询，时谓「山中宰相」。著《真诰》《养性延命录》。'}},
+  zhenjun:   {n:'敕封真君', k:'good', b:'成就 · 仙', ep:'一乡蒙其惠，一郡仰其名。朝廷闻之，赐号真君。受封之日，犹布衣草履，如未尝富贵。', hist:{who:'许逊', era:'239–374', txt:'晋代道士，净明道始祖。镇南昌，斩蛟除害，乡人立祠。传说举家四十二口拔宅飞升，世称许真君。'}},
+  dixian:    {n:'驻世地仙', k:'good', b:'成就 · 仙', ep:'白发返黑，齿落更生。居尘而不染尘，历世而不改其乐。人问其年，笑而不答。', hist:{who:'彭祖', era:'?–?', txt:'传说颛顼玄孙，历夏至殷，年八百岁。善导引行气，食雉羹。世人言长寿者，必称彭祖。'}},
+  zhixian:   {n:'谪仙归位', k:'good', b:'成就 · 仙', ep:'人间游戏数十载，偶露锋铓，惊动朝野。一日不告而别，惟遗诗一首，末句云：「我本天上客，误落人间来。」', hist:{who:'李白', era:'701–762', txt:'贺知章见其文，叹为「谪仙人」。天宝初供奉翰林，醉中草答蕃书。后放还，浪迹江湖，死于当涂。'}},
+  bingjie:    {n:'兵解化道', k:'grey', b:'兵解 · 仙', ep:'自碎金丹，蜕形而去。或言其转生海外，或言其散为清气。此身既绝于人世，亦不复入宗谱。'},
  zouhuo:     {n:'走火入魔', k:'bad',  b:'陨落 · 仙', ep:'贪进而失守，气逆而神摧。坐化之处，蒲团焦黑，四壁裂纹如蛛网。'},
  caomangtianzi:{n:'草莽天子', k:'good', b:'开国 · 帝', ep:'起于沟壑，终践天位。尝谓左右：朕犹记破庙梁上有一燕巢，岁岁归来。左右不敢对。在位十九年，天下粗安。', hist:{who:'明太祖 朱元璋', era:'1328–1398', txt:'濠州钟离人，父母兄长俱殁于疫，入皇觉寺为僧，旋托钵行乞淮西三年。称帝后于宫中设一室，藏微时所用破碗。'}},
  xiongzhu:   {n:'雄主守成', k:'good', b:'守成 · 帝', ep:'承祧于危，持重于安。不喜兵，不好大，二十年间仓廪常实。庙号曰「宣」。', hist:{who:'汉宣帝 刘询', era:'前91–前49', txt:'生于狱中，长于民间，即位后知稼穑之艰。在位二十五年，仓廪充实，谷石五钱。庙号中宗，谥曰宣——「圣善周闻曰宣」。'}},
@@ -2056,7 +2118,16 @@ const ENDINGS = {
   hist:{who:'明成祖 朱棣', era:'1360–1424', txt:'五出漠北，崩于榆木川行辕。杨荣、金幼孜秘不发丧，熔锡为椑，载以龙辇还京。'}},
  longYu:{n:'龙驭宾天', k:'bad', b:'过程坏结局 · 帝',
   ep:'禁中祸变，变起肘腋，帝王暴崩。史官讳笔，但书「龙驭上宾」四字。',
-  hist:{who:'历代非正常崩逝之君', era:'—', txt:'宫车晏驾，史书讳饰。或云遇弑，或云幽死，皆付「龙驭上宾」四字，不言其详。'}}
+  hist:{who:'历代非正常崩逝之君', era:'—', txt:'宫车晏驾，史书讳饰。或云遇弑，或云幽死，皆付「龙驭上宾」四字，不言其详。'}},
+/* v1.8 封版 · 宗教线定位档位善终铭文（§十：ach → 青史善终，与 IDENTITIES.ach 对齐） */
+ fashi:    {n:'法师', k:'good', b:'善终 · 道', ep:'开坛讲经，渐有信众。改革旧法，立新仪轨，遂得国助，道观遍于州郡。', hist:{who:'寇谦之', era:'365–448', txt:'北魏道士，改革天师道，订乐章诵诫新法，受太武帝崇信，道教遂得国助。'}},
+ gaogong:  {n:'高功', k:'good', b:'善终 · 道', ep:'道行既深，掌坛行仪。斋醮科范，由其而定，后世奉为成法。', hist:{who:'陆修静', era:'406–477', txt:'南朝道教集大成者，立斋醮仪范，编《三洞经书目录》，道教科仪自此大备。'}},
+ kaizu:    {n:'开宗祖师', k:'good', b:'善终 · 道', ep:'开宗立派，法脉流传。一花五叶，遍满诸方，千年之下，犹奉为初祖。', hist:{who:'达摩', era:'?–536', txt:'南天竺僧，面壁九年，传禅宗心印。后世尊为东土初祖，一花五叶，遍满诸方。'}},
+ xuandao:  {n:'玄门高道', k:'good', b:'善终 · 道', ep:'丹经符箓，兼通医道。著书立说，以医济世，谓为道者当兼修术以救近祸。', hist:{who:'葛洪', era:'283–343', txt:'道士医家，《抱朴子》作者，炼丹求仙，兼精岐黄，谓「为道者兼修医术，以救近祸」。'}},
+ jishi:    {n:'济世道医', k:'good', b:'善终 · 道', ep:'悬壶于道观，活人于乱世。道医双修，朝廷征辟而不就，惟以方术济人。', hist:{who:'孙思邈', era:'581–682', txt:'道士医家，著《千金方》，太宗召见，授爵不拜。后世尊药王，立祠祀之。'}},
+bMedArrest:{n:'行医被捕', k:'bad', b:'过程坏结局 · 医',
+  ep:'无照行医，被人讦告。枷号三月，逐出本乡。再不敢言医。',
+  hist:{who:'走方郎中（泛指）', era:'历代', txt:'民间游医无官凭，治死即按"庸医杀人"论，轻则逐籍，重则偿命。'}}
 };
 
 /* ───────── ⑥b 结局评级 · 品第（P1-4） ─────────
@@ -2106,17 +2177,106 @@ const IDENTITIES = {
     cond:s => !!(s.routes.zong && s.routes.zong.active) && !!s.flags.护国,
     ach:'huguo',
   log:'以法护国，法难遂寝。', hist:{who:'法琳', era:'?–640', txt:'武德中，诏沙汰僧道。琳上书抗论，辞色不挠，卒全佛法。'} },
+  /* v1.8 封版 · 宗教线定位档位（§十：香火/信徒梯度，零数值增益） */
+  shami:    { n:'道童',   pri:6,
+    cond:s => !!(s.routes.zong && s.routes.zong.active) && (s.incense||0)<2,
+    log:'初入山门，洒扫庭除。', hist:{who:'少年道童（泛指）', era:'历代', txt:'道观收孤弱幼童为童行，扫洒应对，习经咒。及长，或留观为道士，或还俗归田，名多不载于史。'} },
+  fashi:    { n:'法师',   pri:5,
+    cond:s => (s.incense||0)>=2,
+    ach:'fashi',
+    log:'开坛讲经，渐有信众。', hist:{who:'寇谦之', era:'365–448', txt:'北魏道士，改革天师道，订乐章诵诫新法，受太武帝崇信，道教遂得国助。'} },
+  gaogong:  { n:'高功',   pri:4,
+    cond:s => (s.incense||0)>=5 && (s.believers||0)>=300,
+    ach:'gaogong',
+    log:'道行既深，掌坛行仪。', hist:{who:'陆修静', era:'406–477', txt:'南朝道教集大成者，立斋醮仪范，编《三洞经书目录》，道教科仪自此大备。'} },
+  kaizu:    { n:'开宗祖师', pri:1,
+    cond:s => (s.believers||0)>=1000,
+    ach:'kaizu',
+    log:'开宗立派，法脉流传。', hist:{who:'达摩', era:'?–536', txt:'南天竺僧，面壁九年，传禅宗心印。后世尊为东土初祖，一花五叶，遍满诸方。'} },
+  xuandao:  { n:'玄门高道', pri:2,
+    cond:s => !!(s.routes.zong && s.routes.zong.active) && !!s.flags.修仙入门,
+    ach:'xuandao',
+    log:'丹经符箓，兼通医道。', hist:{who:'葛洪', era:'283–343', txt:'道士医家，《抱朴子》作者，炼丹求仙，兼精岐黄，谓「为道者兼修医术，以救近祸」。'} },
+  jishi:    { n:'济世道医', pri:2,
+    cond:s => !!(s.routes.zong && s.routes.zong.active) && !!(s.routes.yi && s.routes.yi.active),
+    ach:'jishi',
+    log:'悬壶于道观，活人于乱世。', hist:{who:'孙思邈', era:'581–682', txt:'道士医家，著《千金方》，太宗召见，授爵不拜。后世尊药王，立祠祀之。'} },
+  yaoyan:   { n:'妖言惑众', pri:5, tier:'bad',
+    cond:s => (s.sermonBusted||0)>=3,
+    log:'屡遭查禁，流言不止。' },
   mingchen: { n:'名臣',   pri:3,
     cond:s => !!(s.routes.zheng && s.routes.zheng.active) && s.rank>=3,
     ach:'mingchen',
   log:'位列公卿，谋国不谋身。', hist:{who:'范仲淹', era:'989–1052', txt:'寒素出身，三黜三起，先天下之忧而忧。'} },
+  /* v1.8 封版 · 政线定位档位（§十二·3/4：官阶/政绩/民心梯度，零数值增益） */
+  xuli:     { n:'胥吏',   pri:6,
+    cond:s => !!(s.routes.zheng && s.routes.zheng.active) && (s.rank||0)<1,
+    log:'刀笔游走，未入流品。', hist:{who:'刀笔胥吏（泛指）', era:'历代', txt:'州县衙门掌案牍、收银粮之属，未入九品流内。熟律例、通书算，上官倚为耳目，而史册鲜书其名。'} },
+  nengli:   { n:'能吏',   pri:5,
+    cond:s => (s.zhengji||0)>=5,
+    ach:'nengli',
+    log:'断案如流，治邑有声。', hist:{who:'成龙', era:'1617–1684', txt:'知县起家，治盗断案，所至有能声。累迁两江总督，以清廉强干称。'} },
+  liangmu:  { n:'良牧',   pri:4,
+    cond:s => (s.minxin||0)>=7,
+    ach:'liangmu',
+    log:'牧民如子，境内丰乐。', hist:{who:'召信臣', era:'?–?', txt:'南阳太守，为民兴利，开沟渎，垦稻田，户口殷盛。吏民称「召父」。'} },
+  fengjiang:{ n:'封疆大吏', pri:2,
+    cond:s => (s.zhengji||0)>=8 && (s.minxin||0)>=5,
+    ach:'fengjiang',
+    log:'节制一方，屏藩社稷。', hist:{who:'林则徐', era:'1785–1850', txt:'湖广总督，禁烟御边，虎门销烟。后谪伊犁，犹垦荒兴水利。'} },
+  zaifu:    { n:'宰辅',   pri:2,
+    cond:s => (s.influence||0)>=8 && (s.rank||0)>=4,
+    ach:'zaifu',
+    log:'位极人臣，一言兴邦。', hist:{who:'王安石', era:'1021–1086', txt:'同平章事，行新法。新旧党争起伏，罢相再三。身后功过，聚讼千年。'} },
+  xunli:    { n:'循吏',   pri:3,
+    cond:s => (s.moral||0)>=6 && (s.minxin||0)>=5,
+    ach:'xunli',
+    log:'奉公守法，民怀其惠。', hist:{who:'海瑞', era:'1514–1587', txt:'备棺上疏，直声动天下。官户部主事，清丈田亩，平赋税，民称「海青天」。'} },
+  quanchen: { n:'权臣',   pri:2,
+    cond:s => (s.influence||0)>=8 && (s.attrs.脉||0)>=6,
+    ach:'quanchen',
+    log:'结援树党，权倾朝野。', hist:{who:'严嵩', era:'1480–1567', txt:'柄国二十年，票拟独断。后得罪下狱，年八十七，寄食墓舍而死。'} },
+  jianchen: { n:'奸臣',   pri:2,
+    cond:s => (s.moral||0)<=3 && (s.influence||0)>=7,
+    ach:'jianchen',
+    log:'构陷忠良，富可敌国。', hist:{who:'蔡京', era:'1047–1126', txt:'崇宁柄国，倡「丰亨豫大」，六贼之首。汴京破前贬死潭州，天下快之。'} },
+  /* v1.8 封版 · 军线纵向档位（§十二·1：兵权 bingquan 梯度，零数值增益；mingjiang 保持不动，低阶档列其前） */
+  xingwu:   { n:'行伍',   pri:6,
+    cond:s => !!(s.routes.jun && s.routes.jun.active) && (s.bingquan||0)<2,
+    log:'初入行伍，未识旌麾。', hist:{who:'行伍卒伍（泛指）', era:'历代', txt:'农家子投军，列名尺籍伍符，屯田戍边，不知帅印为何物。老死辕门者，史不书其姓名，唯书「士卒若干」。'} },
+  pianpi:   { n:'偏裨',   pri:5,
+    cond:s => (s.bingquan||0)>=2 && (s.rank||0)>=1,
+    ach:'pianpi',
+    log:'裨将偏师，始预戎机。', hist:{who:'乐进', era:'?–218', txt:'本帐下吏，每战先登。从曹操屡有勋效，迁折冲将军，为人短小精悍，胆烈过人。'} },
+  xiaowei:  { n:'校尉',   pri:4,
+    cond:s => (s.bingquan||0)>=4 && (s.rank||0)>=2,
+    ach:'xiaowei',
+    log:'领一校之士，厉兵秣马。', hist:{who:'周瑜', era:'175–210', txt:'二十四岁为中郎将，治兵江东，羽扇纶巾，谈笑破敌于赤壁。'} },
   mingjiang:{ n:'名将',   pri:3,
     cond:s => !!(s.routes.jun && s.routes.jun.active) && s.merit>=8 && s.rank>=4,
     ach:'mingjiang',
-  log:'身经百战，威震边庭。', hist:{who:'郭子仪', era:'697–781', txt:'再造唐室，权倾天下而朝不忌，功盖一代而主不疑。每有诏至，即日就道，不问所之。年八十五而终。'} },
+    log:'身经百战，威震边庭。', hist:{who:'郭子仪', era:'697–781', txt:'再造唐室，权倾天下而朝不忌，功盖一代而主不疑。每有诏至，即日就道，不问所之。年八十五而终。'} },
+  /* v1.8 封版 · 军线纵向高阶 + 横向定位档位（§十二·1/2：zhenjiang 列 mingjiang 后，避免同 pri3 先遍历卡死；baizhan/shuji/shoujiang 为按玩法分流派，零数值增益） */
+  zhenjiang:{ n:'镇将',   pri:3,
+    cond:s => (s.bingquan||0)>=6 && (s.troops||0)>=300,
+    ach:'zhenjiang',
+    log:'节制一方，兵符在握。', hist:{who:'李光弼', era:'708–764', txt:'与郭子仪齐名，统朔方军。河阳之战，以寡破众，挫安史锐卒，威震两河。'} },
+  zhuguo:   { n:'柱国',   pri:2,
+    cond:s => (s.bingquan||0)>=8 && (s.influence||0)>=7,
+    ach:'zhuguo',
+    log:'位列柱国，勋高柱石。', hist:{who:'李靖', era:'571–649', txt:'平萧铣、灭突厥、破吐谷浑。图像凌烟阁，封卫国公，出将入相，一代完人。'} },
+  baizhan:  { n:'百战兵锋', pri:3,
+    cond:s => (s.warWins||0)>=3,
+    log:'身经百战，锋锐无前。', hist:{who:'霍去病', era:'前140–前117', txt:'十八为骠姚校尉，六击匈奴，封狼居胥而还。年少立功，千古奇将。'} },
+  shuji:    { n:'枢机武臣', pri:2,
+    cond:s => (s.influence||0)>=7 && (s.rank||0)>=4,
+    log:'典禁兵，参机务。', hist:{who:'鱼朝恩', era:'722–770', txt:'观军容使，典神策禁兵，权倾一时。后为主所诛。'} },
+  shoujiang:{ n:'守土良将', pri:3,
+    cond:s => (s.bingquan||0)>=6 && (s.warWins||0)<=1,
+    log:'缮垒屯田，不浪一战。', hist:{who:'李牧', era:'?–前229', txt:'北备匈奴，市租入幕，犒赏士卒而不浪战。十年不敢犯边，终破匈奴十余万骑。'} },
   guoshou:  { n:'国手',   pri:3,
     cond:s => !!(s.routes.yi && s.routes.yi.active)
-              && (s.attrs.才>=7 || s.tags.indexOf('活人无算')>=0 || s.tags.indexOf('著书')>=0),
+              && (s.attrs.才>=7 || s.tags.indexOf('活人无算')>=0 || s.tags.indexOf('著书')>=0 || s.rep>=8),
     ach:'xinglin',
     log:'活人无算，术通于神。' , hist:{who:'董奉', era:'?–?', txt:'居庐山，为人治病不取钱，重者令种杏五株，轻者一株。数年得十万余株，郁然成林。后世称医家为「杏林」，本此。'} },
   chujiangrux:{ n:'出将入相', pri:2,
@@ -2144,13 +2304,38 @@ const IDENTITIES = {
     ach:'yaowang',
   log:'医道通玄，人称药王。', hist:{who:'孙思邈', era:'581–682', txt:'隋末唐初道士医家，著《千金方》。后世尊为药王，立祠祀之。'} },
   juaj:     { n:'巨贾',   pri:4,
-    cond:s => !!(s.routes.shang && s.routes.shang.active) && s.attrs.财>=7,
+    cond:s => !!(s.routes.shang && s.routes.shang.active) && s.money>=500,
     ach:'fujia',
     log:'货殖天下，富甲一方。' , hist:{who:'陶朱公 范蠡', era:'?–?', txt:'去越适齐，三致千金，三散于贫交疏昆弟。老而听子孙，家资累巨万。后世言富者称陶朱。'} },
   zhenren:  { n:'真人',   pri:4,
     cond:s => (s.flags.修仙入门 || !!(s.routes.xian && s.routes.xian.active)) && s.xianTier>=3,
     ach:'zhenren',
   log:'元婴既结，寒暑不侵。', hist:{who:'陈抟', era:'?–989', txt:'隐武当、华山，服气辟谷，一睡百余日。太宗召见，赐号「希夷先生」。端拱二年卒于莲花峰下，肢体犹温，异香经旬不散。'} },
+  /* v1.8 补档 · 修仙线纵向七阶（§7.2：xianTier 阈值，零数值增益；与现有 zhenren 真人 组成完整七阶。
+     pri 随境界升高而递减（方士8→…→谪仙2），保证 checkIdentity 在多阈值同时满足时取最高已达之阶。 */
+  fangshi:  { n:'方士',   pri:8,
+    cond:s => (s.flags.修仙入门 || !!(s.routes.xian && s.routes.xian.active)) && (s.xianTier||0) < 0,
+    log:'初窥丹经，未脱凡骨。', hist:{who:'徐福', era:'?–?', txt:'秦方士，上书言海中有三神山，请童男女入海求仙。始皇遣之，船队竟不知所终，或云避居夷洲。'} },
+  sanxiu:   { n:'散修',   pri:7,
+    cond:s => (s.flags.修仙入门 || !!(s.routes.xian && s.routes.xian.active)) && (s.xianTier||0) >= 0,
+    ach:'sanxiu',
+    log:'引气入体，渐离尘嚣。', hist:{who:'魏伯阳', era:'?–?', txt:'东汉炼丹家，《周易参同契》作者，后世奉为丹经之祖。云游四方，不事王侯，以炉火为事。'} },
+  daoren:   { n:'道人',   pri:6,
+    cond:s => (s.flags.修仙入门 || !!(s.routes.xian && s.routes.xian.active)) && (s.xianTier||0) >= 1,
+    ach:'daoren',
+    log:'筑基已成，吐纳有节。', hist:{who:'陶弘景', era:'456–536', txt:'南朝道士，隐句曲山。武帝礼聘不出，国家大事每就谘询，时谓「山中宰相」。著《真诰》《养性延命录》。'} },
+  zhenjun:  { n:'真君',   pri:5,
+    cond:s => (s.flags.修仙入门 || !!(s.routes.xian && s.routes.xian.active)) && (s.xianTier||0) >= 2,
+    ach:'zhenjun',
+    log:'金丹既凝，已非俗流。', hist:{who:'许逊', era:'239–374', txt:'晋代道士，净明道始祖。镇南昌，斩蛟除害，乡人立祠。传说举家四十二口拔宅飞升，世称许真君。'} },
+  dixian:   { n:'地仙',   pri:3,
+    cond:s => (s.flags.修仙入门 || !!(s.routes.xian && s.routes.xian.active)) && (s.xianTier||0) >= 4,
+    ach:'dixian',
+    log:'化神功成，驻世长生。', hist:{who:'彭祖', era:'?–?', txt:'传说颛顼玄孙，历夏至殷，年八百岁。善导引行气，食雉羹。世人言长寿者，必称彭祖。'} },
+  zhixian:  { n:'谪仙',   pri:2,
+    cond:s => (s.flags.修仙入门 || !!(s.routes.xian && s.routes.xian.active)) && (s.xianTier||0) >= 5,
+    ach:'zhixian',
+    log:'渡劫功满，暂谪人间。', hist:{who:'李白', era:'701–762', txt:'贺知章见其文，叹为「谪仙人」。天宝初供奉翰林，醉中草答蕃书。后放还，浪迹江湖，死于当涂。'} },
   /* v1.7 增补一 · 邪教身份：合欢宗主（tier:bad，无 ach 铭文——凶终抹去，不立善终之名） */
   hehuan:   { n:'合欢宗主', pri:5, tier:'bad',
     cond:s => !!s.flags.合欢宗主,
@@ -2209,12 +2394,21 @@ const ACTIONS = [
  /* ── ⑦b 路线专属行为 / 人生节点 / 修仙 / 起事 ── */
  {id:'heal', n:'行医济人', cat:'路线', show:s=>!!(s.routes.yi&&s.routes.yi.active), ok:()=>true, hint:'才＋1 望＋1 道德＋1',
   run:s=>({txt:'诊了四十七人，收诊金者不过半。',eff:{a:{才:1,望:1},moral:1,h:-2}})},
+{id:'quack', n:'游方行医（黑医）', cat:'路线',
+  show:s=>!s.flags['行医执照'] && s.attrs.才>=3, ok:()=>true,
+  hint:'才+1 望+1 · 无照行医有被捕之险',
+  run:s=>{
+    if(chance(0.45)){
+      return { txt:'你无照施治，被病患家属讦告。衙役上门枷号，行医之路到此为止。', eff:{ end:'bMedArrest' } };
+    }
+    return { txt:'你走村串户，治些头疼脑热。虽无照，倒也活人无数。', eff:{ a:{才:1,望:1}, moral:1, h:-1 } };
+  }},
  {id:'drill', n:'从军历练', cat:'路线', show:s=>!!(s.routes.jun&&s.routes.jun.active), ok:s=>s.health>16, why:'健康过低',
   hint:'军功＋1 武＋1 · 健康－5',
   run:s=>({txt:'边关巡哨一年，斩获三级。',eff:{a:{武:1},merit:1,h:-5}})},
- {id:'preach', n:'讲经募化', cat:'路线', show:s=>!!(s.routes.zong&&s.routes.zong.active), ok:()=>true,
-  hint:'香火＋2 心境＋1 望＋1',
-  run:s=>({txt:'开小坛于市口，听者渐众。',eff:{incense:2,a:{望:1},mind:1}})},
+ {id:'preach', n:'传教募化', cat:'路线', show:s=>!!(s.routes.zong&&s.routes.zong.active), ok:()=>true,
+  hint:'耗银 20–80 · 信徒＋30~120 · 信徒>800 有查禁险',
+  run:s=>{ const r=templePreach(); return { txt: r.ok ? (r.busted?'传教遇官府查禁，信众散去 '+r.loss+' 人。':'开坛传教，信众渐聚 '+r.got+' 人。') : (r.reason||'传教未行。'), eff:{} }; }},
  {id:'court', n:'疏通门路', cat:'路线', show:s=>s.rank>=3, ok:s=>s.attrs.财>=1, why:'缺 财 1',
   hint:'脉＋1 望＋1 · 财－1',
   run:s=>({txt:'年礼送出去十二份，回帖收到九份。',eff:{a:{脉:1,望:1,财:-1},moral:-1}})},
@@ -2289,8 +2483,9 @@ const ACTIONS = [
   ok:()=>true, hint:'望＋1 道德＋1 · 政务',
   run:s=>({txt:'案牍之间又过一年，批了三百本奏疏。', eff:{a:{望:1},moral:1}})},
  {id:'campaign', n:'御驾亲征', cat:'路线', show:s=>s.identity==='diwang'||s.identity==='weimian',
-  ok:s=>s.health>20, why:'健康过低', hint:'武＋1 军功＋2 望＋1 · 健康－8',
-  run:s=>({txt:'大军出征，旗鼓相望，朔风卷起满山旌旗。', eff:{a:{武:1,望:1},merit:2,h:-8}})},
+  ok:s=>s.health>20 && s.playBudget>0 && (s.troops||0)>=12000, why:'健康过低/玩法已尽/兵力空虚',
+  hint:'拓土开疆 · 耗兵耗库（详见朝堂）',
+  run:s=>{ const r=emperorCampaign(); return { txt: r.ok ? (r.win?'大军凯旋，拓土 '+r.gain+' 州，损耗颇重。':'亲征受挫，折兵 '+r.loss+'，失地 '+r.terr+'。') : (r.reason||'亲征未行。'), eff:{} }; }},
  {id:'talent', n:'举荐人才', cat:'路线', show:s=>s.identity==='mingchen'||(!!(s.routes.zheng&&s.routes.zheng.active)&&s.rank>=4),
   ok:()=>true, hint:'脉＋1 才＋1',
   run:s=>({txt:'你向朝廷举荐了几位寒门才士，其中一人后来入了枢密。', eff:{a:{脉:1,才:1}}})},
@@ -2348,15 +2543,29 @@ const ACTIONS = [
  {id:'wendao', n:'问道论玄', cat:'路线', show:s=>s.identity==='zhenren'||!!s.flags.修仙入门,
   ok:()=>true, hint:'修为＋12 心境＋1',
   run:s=>({txt:'你与同道论道三日，各有所得，辞别时相视一笑。', eff:{cult:12,mind:1}})},
- {id:'kaitan', n:'开坛讲法', cat:'路线', show:s=>s.identity==='jiaozong'||s.identity==='huguo'||(!!(s.routes.zong&&s.routes.zong.active)),
-  ok:()=>true, hint:'香火＋2 望＋1 · 心境＋1',
-  run:s=>({txt:'你升座说法，听者如堵，檐下香灰落了寸许。', eff:{incense:2,a:{望:1},mind:1}})},
+ {id:'sermon', n:'举办法会', cat:'路线', show:s=>s.identity==='jiaozong'||s.identity==='huguo'||(!!(s.routes.zong&&s.routes.zong.active)),
+  ok:s=>s.playBudget>0 && (s.believers||0)>=10, why:'玩法已尽/信徒不足', hint:'香火＋(按信徒) · 有被查险（每窗口限 1）',
+  run:s=>{ const r=templeRite(); return { txt: r.ok ? (r.success?'法会香火鼎盛，香火 ＋'+r.incense+'。':'法会被指妖言，声名受损。') : (r.reason||'法会未行。'), eff:{} }; }},
+ {id:'alms', n:'化斋募施', cat:'路线', show:s=>s.identity==='jiaozong'||s.identity==='huguo'||(!!(s.routes.zong&&s.routes.zong.active)),
+  ok:s=>s.playBudget>0 && s.incense>=2 && (s.believers||0)>=10, why:'玩法已尽/香火信徒不足', hint:'耗香火信徒 · 得财 · 有破裂险（每窗口限 1）',
+  run:s=>{ const r=templeAlms(); return { txt: r.ok ? (r.break?'化斋遇权贵迫害，信众散去 '+r.bl+' 人。':'化斋募施，得财 '+r.gain+' 银。') : (r.reason||'化斋未行。'), eff:{} }; }},
  {id:'muhua', n:'弘法利生', cat:'路线', show:s=>s.identity==='jiaozong'||s.identity==='huguo'||(!!(s.routes.zong&&s.routes.zong.active)),
   ok:()=>true, hint:'香火＋1 道德＋1 望＋1',
   run:s=>({txt:'你散米施药，劝人为善，山门前排队的人弯了几道弯。', eff:{incense:1,moral:1,a:{望:1}}})},
  {id:'hufa', n:'护法卫道', cat:'路线', show:s=>!!(s.routes.zong&&s.routes.zong.active),
   ok:()=>true, hint:'香火＋1 · 立「护国」之志',
-  run:s=>({txt:'你熔金像以助军，散寺产以赈饥。灭法之议，由此而寝。', eff:{incense:1,a:{望:1},flags:['护国']}})}
+  run:s=>({txt:'你熔金像以助军，散寺产以赈饥。灭法之议，由此而寝。', eff:{incense:1,a:{望:1},flags:['护国']}})},
+
+  /* v1.8 P1 · 政线政务日常（cat:'zheng'，双入口：行动栏；新政/举劾在衙署 modal 内联） */
+  {id:'duanan', n:'听讼断案', cat:'路线', show:s=>!!(s.routes.zheng&&s.routes.zheng.active),
+   ok:s=>s.health>10, why:'精力不济', hint:'才＋1 政绩＋1 · 民心＋1',
+   run:s=>({txt:'你升堂问案，剖决如流，两造皆服。', eff:{a:{才:1},zhengji:1,minxin:1}})},
+  {id:'quannong', n:'劝课农桑', cat:'路线', show:s=>!!(s.routes.zheng&&s.routes.zheng.active),
+   ok:()=>true, hint:'政绩＋1 · 民心＋2',
+   run:s=>({txt:'你巡行乡里，劝民耕织，陂塘新筑，田畴复垦。', eff:{zhengji:1,minxin:2}})},
+  {id:'jiaohua', n:'兴学教化', cat:'路线', show:s=>!!(s.routes.zheng&&s.routes.zheng.active),
+   ok:()=>true, hint:'才＋1 政绩＋1 · 道德＋1',
+   run:s=>({txt:'你倡立乡学，延师授徒，闾里弦歌之声渐起。', eff:{a:{才:1},zhengji:1,moral:1}})},
 ];
 
 /* ───────── ⑦d 身份生涯事件池（七线 · 84 条 · 规格 §3.4 / 事件池扩充设计 §4） ─────────

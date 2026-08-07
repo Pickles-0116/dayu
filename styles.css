@@ -888,5 +888,24 @@ button{ font:inherit; color:inherit; cursor:pointer; min-height:var(--hit-min); 
 .btn--bm{ width:100%; border:1px dashed var(--cinnabar); color:var(--cinnabar);
   font-weight:700; letter-spacing:.2em; }
 .btn--bm:hover{ background:var(--cinnabar); color:var(--paper); }
+/* v1.8 PRD · 通用玩法界面（openPlayScreen） */
+.play-status{ margin:var(--sp-3) 0; padding:var(--sp-2) var(--sp-3); background:var(--paper-2,#efe7d6); border:1px solid var(--ink-line-soft); border-radius:6px; }
+.play-sections{ display:flex; flex-direction:column; gap:var(--sp-4); margin:var(--sp-4) 0; max-height:62vh; overflow:auto; }
+.play-sec{ border-top:1px solid var(--ink-line-soft); padding-top:var(--sp-3); }
+.play-sec__hd{ font-family:var(--font-serif); font-size:var(--fs-h3); color:var(--ink-900); margin-bottom:var(--sp-2); }
+.play-empty{ color:var(--ink-500); font-style:italic; }
+.play-note{ font-size:var(--fs-xs); color:var(--ink-500); margin-bottom:var(--sp-2); }
+.danger-note{ border-left:3px solid var(--st-danger); padding-left:var(--sp-2); color:var(--ink-700); }
+.qty-row{ display:flex; align-items:center; gap:var(--sp-2); flex-wrap:wrap; margin:var(--sp-2) 0; }
+.qty-label{ font-weight:700; color:var(--ink-700); min-width:2.5em; }
+.qty-input{ width:7em; padding:4px 6px; border:1px solid var(--ink-line-soft); border-radius:4px; font-family:var(--font-ui); text-align:right; background:var(--paper); }
+.qty-preview{ font-size:var(--fs-sm); color:var(--ink-700); margin:var(--sp-2) 0; min-height:1.4em; }
+.qty-warn{ color:var(--st-danger); font-weight:700; }
+.inv-row{ display:flex; align-items:center; gap:var(--sp-3); padding:var(--sp-2) 0; border-bottom:1px dashed var(--ink-line-soft); }
+.inv-name{ font-weight:700; min-width:4em; }
+.inv-num{ flex:1; font-size:var(--fs-xs); color:var(--ink-500); }
+.inv-val{ color:var(--cinnabar); font-weight:600; }
+.chips{ display:flex; flex-wrap:wrap; gap:var(--sp-2); }
+.chip--on{ border-color:var(--cinnabar); color:var(--cinnabar); background:var(--paper); }
 .legacy-dex{ display:flex; justify-content:space-between; align-items:center; gap:var(--sp-3); margin-top:var(--sp-4); padding-top:var(--sp-3); border-top:1px solid var(--ink-line-soft); }
 
